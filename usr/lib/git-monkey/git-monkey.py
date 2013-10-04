@@ -1,401 +1,244 @@
 #!/usr/bin/env python
 
-import polib
 import sys
 import os
+from subprocess import Popen, PIPE, STDOUT
 import subprocess
-import thread
-import time
-from gi.repository import Gtk, GObject, GLib, Pango, GdkPixbuf
+import git
+from gi.repository import Gdk, Gtk, GObject, GLib, Pango
 GObject.threads_init()
+home = os.path.expanduser("~")
 
-ALLOWED = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
-COMMON_DATE_TOKENS = "HYDMSmy"
-DATE_THRESHOLD = 2
-
-MO_EXT = ".mo"
-PO_EXT = ".po"
-
-GOOD = 0
-BAD_MISCOUNT = 1
-BAD_MISMATCH = 2
-BAD_UNESCAPED_QUOTE = 3
-
-BAD_EXCLUSIONS = 80
-
-BAD_MISCOUNT_MAYBE_DATE = 99
-BAD_MISMATCH_MAYBE_DATE = 100
-
-def allowed(char):
-    return char in ALLOWED
-
-class TokenList(list):
-    def __init__(self):
-        list.__init__(self)
-        self.used_indices = []
-
-    def add(self, entry):
-        position = -1
-        if "$" in entry:
-            position = entry[1:entry.find("$")]
-            self.used_indices.append(position)
-            entry = entry.replace("$", "")
-            entry = entry.replace(position, "")
-            position = int(position)
-        if position == -1 or len(self) == 0 or position > len(self):
-            self.append(entry)
-        else:
-            self.insert(position - 1, entry)
-
-class Mo:
-    def __init__(self, inst, locale, path):
-        self.mofile = inst
-        self.locale = locale
-        self.path = path
-        self.bad_entries = []
-
-class ThreadedTreeView(Gtk.TreeView):
-    def __init__(self, parent, t):
-        Gtk.TreeView.__init__(self)
-        self.type = t
-        self.progress = parent.progress
-        self.datecheck = parent.datecheck
-        self.revert = parent.revert
-        self.save = parent.save
-        self.dirty = False
-        self._count = 0
-        self.set_rules_hint(True)
-        column = Gtk.TreeViewColumn("Language", Gtk.CellRendererText(), markup=2)
-        self.append_column(column)
-
-        cr = Gtk.CellRendererText()
-        column = Gtk.TreeViewColumn("MsgId", cr, markup=3)
-        cr.set_property('wrap-mode', Pango.WrapMode.WORD_CHAR)
-        cr.set_property('wrap-width', 450)
-        self.append_column(column)
-
-        cr = Gtk.CellRendererText()
-        column = Gtk.TreeViewColumn("MsgStr", cr, markup=4)
-        column.set_expand(True)
-        cr.set_property('wrap-mode', Pango.WrapMode.WORD_CHAR)
-        cr.set_property('wrap-width', 450)
-        cr.set_property('editable', True)
-
-        cr.connect("edited", self.on_cell_edited)
-        self.append_column(column)
-
-        cr = Gtk.CellRendererPixbuf()
-        column = Gtk.TreeViewColumn("Dirty", cr, pixbuf=6)
-        column.set_cell_data_func(cr, self.dirty_pixbuf_func)
-        column.set_max_width(50)
-        self.append_column(column)
-
-        self._loading_queue = []
-        self._loading_queue_lock = thread.allocate_lock()
-
-        self._loading_lock = thread.allocate_lock()
-        self._loading = False
-
-        self._loaded_data = []
-        self._loaded_data_lock = thread.allocate_lock()
-
-    def on_cell_edited(self, renderer, path, new_text):
-        self.model[path][4] = new_text
-        self.model[path][5] = new_text != self.model[path][1].msgstr.encode('utf-8')
-        self.update_buttons()
-
-    def dirty_pixbuf_func(self, col, cell, model, iter, data):
-        dirty = model.get_value(iter, 5)
-        if dirty:
-            if self.check_entry(model.get_value(iter, 1), model.get_value(iter, 4)) == GOOD:
-                cell.set_property("stock-id", "gtk-yes")
-            else:
-                cell.set_property("stock-id", "gtk-no")
-        else:
-            cell.set_property("stock-id", None)
-
-    def update_buttons(self):
-        self.dirty = False
-        dirty_iter = self.model.get_iter_first()
-        while dirty_iter != None:
-            dirty = self.model.get_value(dirty_iter, 5)
-            if dirty:
-                self.dirty = True
-            dirty_iter = self.model.iter_next(dirty_iter)
-        self.save.set_sensitive(self.dirty)
-        self.revert.set_sensitive(self.dirty)
-
-    def save_changes(self):
-        iter = self.model.get_iter_first()
-        while iter != None:
-            if self.model.get_value(iter, 5):
-                entry = self.model.get_value(iter, 1)
-                entry.msgstr = self.model.get_value(iter, 4).decode('utf-8')
-                self.model.get_value(iter, 0).mofile.save()
-                self.model.set_value(iter, 5, False)
-            iter = self.model.iter_next(iter)
-        self.update_buttons()
-
-    def revert_changes(self):
-        iter = self.model.get_iter_first()
-        while iter != None:
-            if self.model.get_value(iter, 5):
-                entry = self.model.get_value(iter, 1)
-                self.model.set_value(iter, 4, entry.msgstr) 
-                self.model.set_value(iter, 5, False)
-            iter = self.model.iter_next(iter)
-        self.update_buttons()
-
-    def clear(self):
-        self._count = 0
-        self.progress.set_text(str(self._count))
-        self._loading_queue_lock.acquire()
-        self._loading_queue = []
-        self._loading_queue_lock.release()
-        
-        self._loading_lock.acquire()
-        is_loading = self._loading
-        self._loading_lock.release()
-        while is_loading:
-            time.sleep(0.1)
-            self._loading_lock.acquire()
-            is_loading = self._loading
-            self._loading_lock.release()
-        self.model = Gtk.TreeStore(object, object, str, str, str, bool, GdkPixbuf.Pixbuf)
-        self.set_model(self.model)
-
-    def _check_loading_progress(self):
-        self._loading_lock.acquire()
-        self._loaded_data_lock.acquire()
-        res = self._loading
-        to_load = []
-        while len(self._loaded_data) > 0:
-            to_load.append(self._loaded_data[0])
-            self._loaded_data = self._loaded_data[1:]
-        self._loading_lock.release()
-        self._loaded_data_lock.release()
-
-        for i in to_load:
-            iter = self.model.insert_before(None, None)
-            self.model.set_value(iter, 0, i[0])
-            self.model.set_value(iter, 1, i[1])
-            self.model.set_value(iter, 2, i[2])
-            self.model.set_value(iter, 3, i[3])
-            self.model.set_value(iter, 4, i[4])
-            self.model.set_value(iter, 5, False) # dirty flag
-            self._count += 1
-            self.progress.set_text(str(self._count))
-        return res
-
-    def load_files(self):
-        self.clear()
-        for root, subFolders, files in os.walk(os.getcwd(),topdown=False):
-            for file in files:
-                if self.type == MO_EXT:
-                    if file.endswith(MO_EXT):
-                        path, junk = os.path.split(root)
-                        path, locale = os.path.split(path)
-                        mo_inst = polib.mofile(os.path.join(root, file))
-                        mo = Mo(mo_inst, locale, os.path.join(root, file))
-                        self.check_file(mo)
-                else:
-                    if file.endswith(PO_EXT):
-                        mo_inst = polib.pofile(os.path.join(root, file))
-                        mo = Mo(mo_inst, file, os.path.join(root, file))
-                        self.check_file(mo)
-        self.progress.set_fraction(1.0)
-
-    def check_file(self, mofile):
-        self._loading_queue_lock.acquire()
-        self._loading_queue.append(mofile)
-        self._loading_queue_lock.release()
-        
-        start_loading = False
-        self._loading_lock.acquire()
-        if not self._loading:
-            self._loading = True
-            start_loading = True
-        self._loading_lock.release()
-        
-        if start_loading:
-            self.progress.pulse()
-            GObject.timeout_add(100, self._check_loading_progress)
-            thread.start_new_thread(self._do_load, ())
-
-    def _do_load(self):
-        finished = False
-        while not finished:
-            self._loading_queue_lock.acquire()
-            if len(self._loading_queue) == 0:
-                finished = True
-            else:
-                to_load = self._loading_queue[0]
-                self._loading_queue = self._loading_queue[1:]
-            self._loading_queue_lock.release()
-            if not finished:
-                for entry in to_load.mofile:
-                    res = self.check_entry(entry)
-                    exclude_dates = self.datecheck.get_active()
-                    if (res > GOOD and res < BAD_MISCOUNT_MAYBE_DATE) or \
-                       (res > BAD_EXCLUSIONS and not exclude_dates):
-                        self._loaded_data_lock.acquire()
-                        self._loaded_data.append((to_load, entry, to_load.locale, entry.msgid, entry.msgstr))
-                        self._loaded_data_lock.release()
-
-        self._loading_lock.acquire()
-        self._loading = False
-        self._loading_lock.release()
-
-    def check_entry(self, entry, updated_val = None):
-        id_tokens = TokenList()
-        str_tokens = TokenList()
-        msgid = entry.msgid
-        if updated_val:
-            msgstr = updated_val
-        else:
-            msgstr = entry.msgstr
-        id_date_count = 0
-        str_date_count = 0
-
-        for idx in range(len(msgid)):
-            if msgid[idx] == "%":
-                if msgid[idx-1] > -1 and msgid[idx-1] != "\\":
-                    catch = ""
-                    subidx = 0
-                    while True:
-                        subidx += 1
-                        try:
-                            catch = msgid[idx+subidx]
-                            if allowed(catch):
-                                if catch in COMMON_DATE_TOKENS:
-                                    id_date_count += 1
-                                token = msgid[idx:(idx+subidx+1)]
-                                id_tokens.add(token)
-                                break
-                        except IndexError:
-                            break
-
-        for idx in range(len(msgstr)):
-            if msgstr[idx] == "%":
-                if msgstr[idx-1] > -1 and msgstr[idx-1] != "\\":
-                    catch = ""
-                    subidx = 0
-                    while True:
-                        subidx += 1
-                        try:
-                            catch = msgstr[idx+subidx]
-                            if allowed(catch):
-                                if catch in COMMON_DATE_TOKENS:
-                                    str_date_count += 1
-                                token = msgstr[idx:idx+subidx+1]
-                                str_tokens.add(token)
-                                break
-                        except IndexError:
-                            break
-        if msgstr != "":
-            if (len(id_tokens) != len(str_tokens)):
-                if id_date_count >= DATE_THRESHOLD or str_date_count >= DATE_THRESHOLD:
-                    return BAD_MISCOUNT_MAYBE_DATE
-                else:
-                    return BAD_MISCOUNT
-            else:
-                mismatch = False
-                for j in range(len(id_tokens)):
-                    if id_tokens[j] != str_tokens[j]:
-                        mismatch = True
-                if (id_date_count >= DATE_THRESHOLD or str_date_count >= DATE_THRESHOLD) and mismatch:
-                    return BAD_MISMATCH_MAYBE_DATE
-                elif mismatch:
-                    return BAD_MISMATCH
-        return GOOD
+class GitRepo(git.Repo):
+    def __init__(self, dir, upstream_remote, upstream_branch):
+        git.Repo.__init__(self, dir)
+        self.can_make = False
+        self.name = os.path.split(dir)[1]
+        self.dir = dir
+        self.upstream_remote = upstream_remote
+        self.upstream_branch = upstream_branch
 
 class Main:
     def __init__(self):
-        if len(sys.argv) > 1:
-            if sys.argv[1] == "-po":
-                t = PO_EXT
-                self.start(t)
-            elif sys.argv[1] == "-mo":
-                t = MO_EXT
-                self.start(t)
-            elif sys.argv[1].endswith(".pot"):
-                self.do_merge()
-            else:
-                self.end()
+        self.config_path = os.path.join(home, ".git-monkey")
+        if os.path.exists(self.config_path):
+            self.start()
         else:
             self.end()
 
     def end(self):
-        print ""
-        print "mocheck: a .po and .mo translation file checker and tweak tool."
-        print ""
-        print "mocheck searches for errors in format tokens, such as incorrect"
-        print "number, non-matching, or out of order conditions.  mocheck will"
-        print "then allow you to fix the offending translations by adding order"
-        print "codes (%1$d, %2$s, etc..) or missing tokens."
-        print ""
-        print "Usage:"
-        print "       mocheck -po:  scan recursively from current directory for .po files"
-        print "       mocheck -mo:  scan recursively from current directory for .mo files"
-        print " "
+        print """
+              git-monkey: a simple repo manager for debian-based projects.
+
+              To use, you need file in your home folder called ".git-monkey".
+
+              Within it, you put entries like this:
+
+              /home/mtwebster/bin/cinnamon, mint, master
+              /home/mtwebster/bin/cinnamon-session, origin, master
+
+              That is, 
+
+              <path-to-git-project>   ,  <upstream remote name>  ,  <upstream tracking branch>
+
+              """
         quit()
 
-    def start(self, t):
+    def start(self):
         self.builder = Gtk.Builder()
-        self.builder.add_from_file("/usr/lib/mocheck/mocheck.glade")
+        # self.builder.add_from_file("/home/mtwebster/bin/git-monkey/usr/lib/git-monkey/git-monkey.glade")
+        self.builder.add_from_file("/usr/lib/git-monkey/git-monkey.glade")
         self.treebox = self.builder.get_object("treebox")
         self.window = self.builder.get_object("window")
-        self.status = self.builder.get_object("status")
-        self.refresh_button = self.builder.get_object("refresh")
-        self.progress = self.builder.get_object("progress")
-        self.datecheck = self.builder.get_object("datecheck")
-        self.save = self.builder.get_object("save")
-        self.revert = self.builder.get_object("revert")
+        self.clean_button = self.builder.get_object("clean")
+        self.reset_button = self.builder.get_object("reset")
+        self.term_button = self.builder.get_object("terminal")
+        self.full_build_button = self.builder.get_object("build")
+        self.output_scroller = self.builder.get_object("scroller")
+        self.output = self.builder.get_object("output_view")
+        self.new_branch = self.builder.get_object("new_branch")
 
+        color = Gdk.RGBA()
+        Gdk.RGBA.parse(color, "black")
+        self.output.override_background_color(Gtk.StateFlags.NORMAL, color)
+        Gdk.RGBA.parse(color, "#00CC00")
+
+        fontdesc = Pango.FontDescription("monospace")
+        self.output.override_font(fontdesc)
+
+        self.output.override_color(Gtk.StateFlags.NORMAL, color)
         self.window.connect("destroy", Gtk.main_quit)
-        self.datecheck.connect("toggled", self.on_refresh_clicked)
-        self.refresh_button.connect("clicked", self.on_refresh_clicked)
-        self.save.connect("clicked", self.on_save_clicked)
-        self.revert.connect("clicked", self.on_revert_clicked)
+        self.branch_combo = self.builder.get_object("branch_combo")
+        self.branch_combo_changed_id = self.branch_combo.connect ("changed", self.on_branch_combo_changed)
+        self.treeview = Gtk.TreeView()
+        self.builder.connect_signals(self)
+        column = Gtk.TreeViewColumn("Name", Gtk.CellRendererText(), markup=1)
+        column.set_min_width(250)
+        self.treeview.append_column(column)
+        column = Gtk.TreeViewColumn("Current Branch", Gtk.CellRendererText(), markup=2)
+        column.set_min_width(250)
+        self.treeview.append_column(column)
+        column = Gtk.TreeViewColumn("Default Upstream", Gtk.CellRendererText(), markup=4)
+        self.treeview.append_column(column)
+        column = Gtk.TreeViewColumn("Status", Gtk.CellRendererText(), markup=3)
+        column.set_max_width(100)
+        self.treeview.append_column(column)
 
-        self.treeview = ThreadedTreeView(self, t)
+        self.model = Gtk.TreeStore(object, str, str, str, str)
+        self.combo_model = Gtk.ListStore(str, str)
+
+        self.current_repo = None
+
+        self.parse_dirs()
+
+        self.treeview.set_model(self.model)
+        self.branch_combo.set_model(self.combo_model)
+        cell = Gtk.CellRendererText()
+        self.branch_combo.pack_start(cell, True)
+        self.branch_combo.add_attribute(cell, "text", 0)
+
         self.treebox.add(self.treeview)
         self.treeview.get_selection().connect("changed", lambda x: self.selection_changed());
         self.window.show_all()
 
-        thread.start_new_thread(self.treeview.load_files, ())
+    def parse_dirs(self):
+        self.model.clear()
+        file = open(self.config_path)
+        raw = file.read()
+        lines = raw.split("\n")
+        file.close()
+        for line in lines:
+            try:
+                d, remote, remote_branch = line.replace(" ", "").split(",")
+                if not os.path.exists(d):
+                    continue
+                repo = GitRepo(d, remote, remote_branch)
+
+                iter = self.model.insert_before(None, None)
+                self.model.set_value(iter, 0, repo)
+                self.model.set_value(iter, 1, repo.name)
+                self.model.set_value(iter, 2, repo.head.reference.name)
+                self.model.set_value(iter, 3, self.grab_repo_status(repo))
+                us_string = "%s/%s" % (repo.upstream_remote, repo.upstream_branch)
+                self.model.set_value(iter, 4, us_string)
+            except ValueError:
+                pass
+        self.clean_button.set_sensitive(False)
+        self.reset_button.set_sensitive(False)
+        self.term_button.set_sensitive(False)
+        self.new_branch.set_sensitive(False)
+
+    def grab_repo_status(self, repo):
+        untracked = len(repo.untracked_files) != 0
+        dirty = repo.is_dirty()
+        if not untracked and not dirty:
+            return "<b><span color='#01DF01'>Clean</span></b>"
+        elif untracked and dirty:
+            return "<b><span color='#DF0101'>Uncommitted | Untracked</span></b>"
+        elif untracked and not dirty:
+            return "<b><span color='#DF0101'>Untracked</span></b>"
+        elif dirty and not untracked:
+            return "<b><span color='#DF0101'>Uncommitted</span></b>"
 
     def selection_changed(self):
         model, treeiter = self.treeview.get_selection().get_selected()
         if treeiter:
-            entry = self.treeview.model.get_value(treeiter, 1)
-            status = self.treeview.check_entry(entry)
-            if status == BAD_MISCOUNT:
-                self.status.set_text("Number of tokens does not match")
-            elif status == BAD_MISCOUNT_MAYBE_DATE:
-                self.status.set_text("Number of tokens does not match (could be a date/time)")
-            elif status == BAD_MISMATCH:
-                self.status.set_text("Tokens not in correct order or mismatch")
-            elif status == BAD_MISMATCH_MAYBE_DATE:
-                self.status.set_text("Tokens not in correct order or mismatch (could be a date/time)")
-            elif status == BAD_UNESCAPED_QUOTE:
-                self.status.set_text("Bad quotes")
-            else:
-                self.status.set_text("")
+            repo = self.model.get_value(treeiter, 0)
+            self.current_repo = repo
+            self.combo_model.clear()
+            current_iter = None
+            for head in repo.heads:
+                iter = self.combo_model.insert_before(None, None)
+                self.combo_model.set_value(iter, 0, head.name)
+                self.combo_model.set_value(iter, 1, head.name)
+                if repo.head.reference.name == head.name:
+                    current_iter = iter
+            if current_iter is not None:
+                self.branch_combo.handler_block(self.branch_combo_changed_id)
+                self.branch_combo.set_active_iter(current_iter)
+                self.branch_combo.handler_unblock(self.branch_combo_changed_id)
+            self.clean_button.set_sensitive(len(repo.untracked_files) != 0)
+            self.reset_button.set_sensitive(repo.is_dirty())
+            self.term_button.set_sensitive(True)
+            self.full_build_button.set_sensitive(True)
+            self.new_branch.set_sensitive(True)
+
+    def on_branch_combo_changed (self, widget):
+        tree_iter = widget.get_active_iter()
+        if tree_iter != None:
+            new_branch = self.combo_model[tree_iter][1]
+            try:
+                self.current_repo.git.checkout(new_branch)
+            except git.exc.GitCommandError, detail:
+                self.inform_error("Could not change branches - you probably have uncommitted changes", str(detail))
+            self.parse_dirs()
 
     def on_refresh_clicked(self, button):
-        if self.treeview.dirty:
-            if not self.ask("There are unsaved changes - discard them?"):
-                return
-        thread.start_new_thread(self.treeview.load_files, ())
+        self.parse_dirs()
 
-    def on_save_clicked(self, button):
-        self.treeview.save_changes()
+    def on_clean_clicked(self, button):
+        self.current_repo.git.clean("-fdx")
+        self.parse_dirs()
 
-    def on_revert_clicked(self, button):
-        if self.treeview.dirty:
-            if self.ask("There are unsaved changes - discard them?"):
-                self.treeview.revert_changes()
+    def on_reset_clicked(self, button):
+        self.current_repo.git.reset("--hard")
+        self.parse_dirs()
+
+    def on_rebase_clicked(self, button):
+        cmd = "git pull --rebase %s %s" % (self.current_repo.upstream_remote, self.current_repo.upstream_branch)
+
+        process = subprocess.Popen(cmd, cwd=self.current_repo.dir, stdout=subprocess.PIPE, stderr=STDOUT, shell=True)
+        GLib.io_add_watch(process.stdout,
+                          GLib.IO_IN,
+                          self.write_to_buffer )
+
+    def on_terminal_clicked(self, button):
+        process = subprocess.Popen("gnome-terminal", cwd=self.current_repo.dir, shell=True)
+
+    def on_build_clicked(self, button):
+        process = subprocess.Popen("dpkg-buildpackage -j$((    $(cat /proc/cpuinfo | grep processor | wc -l)+1    ))", shell=True, cwd=self.current_repo.dir, stdout = subprocess.PIPE, stderr = STDOUT)
+        GLib.io_add_watch(process.stdout,
+                          GLib.IO_IN,
+                          self.write_to_buffer )
+
+    def on_new_branch_clicked(self,button):
+        new_branch = self.ask_new_branch_name("Enter a name for your new branch:")
+        if new_branch is not None:
+            cmd = "git checkout -b %s" % (new_branch)
+            process = subprocess.Popen(cmd, cwd=self.current_repo.dir, stdout=subprocess.PIPE, stderr=STDOUT, shell=True)
+            GLib.io_add_watch(process.stdout,
+                              GLib.IO_IN,
+                              self.write_to_buffer )
+        self.parse_dirs()
+
+    def on_build_all_clicked(self, button):
+        row_iter = self.model.get_iter_first()
+        while row_iter != None:
+            self.current_repo = self.model.get_value(row_iter, 0)
+            self.on_build_clicked(None)
+            row_iter = self.model.iter_next(row_iter)
+
+    def on_rebase_all_clicked(self, button):
+        row_iter = self.model.get_iter_first()
+        while row_iter != None:
+            self.current_repo = self.model.get_value(row_iter, 0)
+            self.on_rebase_clicked(None)
+            row_iter = self.model.iter_next(row_iter)
+
+    def write_to_buffer(self, fd, condition):
+        if condition == GLib.IO_IN:
+            char = fd.read(1)
+            buf = self.output.get_buffer()
+            iter = buf.get_end_iter()
+            buf.insert(iter, char)
+            iter = buf.get_end_iter()
+            self.output.scroll_to_iter(iter, .05, False, 0, 0)
+            # adj = self.output.get_vadjustment()
+            # if adj.get_value() >= adj.get_upper() - adj.get_page_size() - 200.0:
+            #     adj.set_value(adj.get_upper())
+            return True
+        else:
+            return False
 
     def ask(self, msg):
         dialog = Gtk.MessageDialog(None,
@@ -410,14 +253,58 @@ class Main:
         dialog.destroy()
         return response == Gtk.ResponseType.YES
 
-    def do_merge(self):
-        for root, subFolders, files in os.walk(os.getcwd(),topdown=False):
-            for file in files:
-                if file.endswith(PO_EXT):
-                    command = "msgmerge %s %s > %s" % (argv[1], os.path.join(root, file), os.path.join(root, "temp.po"))
-                    os.system(command)
-                    os.remove(os.path.join(root, file))
-                    os.copy(os.path.join(root, "temp.po"), os.path.join(root, file))
+    def ask_new_branch_name(self, msg):
+        dialog = Gtk.MessageDialog(None,
+                                   Gtk.DialogFlags.DESTROY_WITH_PARENT,
+                                   Gtk.MessageType.QUESTION,
+                                   Gtk.ButtonsType.OK_CANCEL,
+                                   None)
+        dialog.set_default_size(400, 200)
+        dialog.set_markup(msg)
+        entry = Gtk.Entry()
+        entry.set_placeholder_text("New branch name...")
+        box = dialog.get_message_area()
+        box.pack_start(entry, False, False, 3)
+        dialog.show_all()
+        response = dialog.run()
+        raw_str = entry.get_text().strip()
+        dialog.destroy()
+        valid = " " not in raw_str
+        if response == Gtk.ResponseType.OK and valid and raw_str != "":
+            return raw_str
+        elif not valid:
+            self.inform_error("Invalid branch name - no spaces allowed", "")
+            return None
+        else:
+            return None
+
+    def inform_error(self, msg, detail):
+        dialog = Gtk.MessageDialog(None,
+                                   Gtk.DialogFlags.DESTROY_WITH_PARENT,
+                                   Gtk.MessageType.ERROR,
+                                   Gtk.ButtonsType.OK,
+                                   None)
+        dialog.set_default_size(400, 200)
+        dialog.set_markup(msg)
+        dialog.format_secondary_markup(detail)
+        dialog.show_all()
+        response = dialog.run()
+        dialog.destroy()
+        return
+
+    def inform(self, msg, detail):
+        dialog = Gtk.MessageDialog(None,
+                                   Gtk.DialogFlags.DESTROY_WITH_PARENT,
+                                   Gtk.MessageType.INFO,
+                                   Gtk.ButtonsType.OK,
+                                   None)
+        dialog.set_default_size(400, 200)
+        dialog.set_markup(msg)
+        dialog.format_secondary_markup(detail)
+        dialog.show_all()
+        response = dialog.run()
+        dialog.destroy()
+        return
 
 if __name__ == "__main__":
     Main()

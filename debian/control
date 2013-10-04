@@ -7,6 +7,6 @@ Standards-Version: 3.7.2
 
 Package: git-monkey
 Architecture: all
-Depends: python (>= 2.4), python (<< 3)
+Depends: python (>= 2.4), python (<< 3), python-git
 Description: Debian multi-project build/git manager
  Easily manage many different interrelated projects and perform common operations on them, including building, git actions, installation, etc...s

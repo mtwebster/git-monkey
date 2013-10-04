@@ -4,6 +4,6 @@ import os
 import sys
 
 if len(sys.argv) > 1:
-    os.system("/usr/lib/mocheck/mocheck.py %s" % sys.argv[1])
+    os.system("/usr/lib/git-monkey/git-monkey.py %s" % sys.argv[1])
 else:
-    os.system("/usr/lib/mocheck/mocheck.py")
+    os.system("/usr/lib/git-monkey/git-monkey.py")

@@ -1,9 +1,8 @@
 #!/usr/bin/env python
 
-import sys
 import os
 import signal
-from subprocess import Popen, PIPE, STDOUT
+from subprocess import PIPE, STDOUT
 import subprocess
 import git
 from gi.repository import Gdk, Gtk, GObject, GLib, Pango, GdkPixbuf
@@ -199,8 +198,8 @@ class Main:
 
     def start(self):
         self.builder = Gtk.Builder()
-        self.builder.add_from_file("/home/mtwebster/bin/git-monkey/usr/lib/git-monkey/git-monkey.glade")
-        # self.builder.add_from_file("/usr/lib/git-monkey/git-monkey.glade")
+        #self.builder.add_from_file("/home/mtwebster/bin/git-monkey/usr/lib/git-monkey/git-monkey.glade")
+        self.builder.add_from_file("/usr/lib/git-monkey/git-monkey.glade")
         self.treebox = self.builder.get_object("treebox")
         self.window = self.builder.get_object("window")
         self.clean_button = self.builder.get_object("clean")
@@ -438,7 +437,7 @@ class Main:
         new_branch = self.ask_new_branch_name("Enter a name for your new branch:")
         if new_branch is not None:
             self.current_repo.new_branch_name = new_branch
-            self.current_repo.state = STATE_NEW_BRANCH
+            self.current_repo.state = STATE_NEW_BRANCH_QUEUED
             job = Job(self.current_repo, JOB_NEW_BRANCH, self.write_to_buffer, self.job_finished_callback)
             self.job_manager.add_job(job)
 

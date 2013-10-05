@@ -2,7 +2,7 @@
 
 import os
 import signal
-from subprocess import PIPE, STDOUT
+from subprocess import STDOUT
 import subprocess
 import git
 from gi.repository import Gdk, Gtk, GObject, GLib, Pango, GdkPixbuf
@@ -16,24 +16,28 @@ STATE_REBASING = 3
 STATE_CLEANING = 4
 STATE_RESETTING = 5
 STATE_NEW_BRANCH_IN_PROGRESS = 6
+STATE_PULL_REQUEST_IN_PROGRESS = 7
 
-STATE_NEW_BRANCH_QUEUED = 7
-STATE_CLEAN_QUEUED = 8
-STATE_RESET_QUEUED = 9
-STATE_BUILD_QUEUED = 10
-STATE_REBASE_QUEUED = 11
+STATE_NEW_BRANCH_QUEUED = 8
+STATE_CLEAN_QUEUED = 9
+STATE_RESET_QUEUED = 10
+STATE_BUILD_QUEUED = 11
+STATE_REBASE_QUEUED = 12
+STATE_PULL_REQUEST_QUEUED = 13
 
-STATE_NEW_BRANCH_DONE = 12
-STATE_RESETTED = 13
-STATE_BUILT = 14
-STATE_REBASED = 15
-STATE_CLEANED = 16
+STATE_NEW_BRANCH_DONE = 14
+STATE_RESETTED = 15
+STATE_BUILT = 16
+STATE_REBASED = 17
+STATE_CLEANED = 18
+STATE_PULL_REQUEST_CHECKED_OUT = 19
 
 JOB_BUILD = 1
 JOB_REBASE = 2
 JOB_RESET = 3
 JOB_CLEAN = 4
 JOB_NEW_BRANCH = 5
+JOB_CHECKOUT_PR = 6
 
 def get_first(iterable, default=None):
     if iterable:
@@ -102,6 +106,14 @@ class Job:
                           self.output_callback)
         self.new_branch_name = ""
 
+    def pull_request(self):
+        self.repo.state = STATE_PULL_REQUEST_IN_PROGRESS
+        cmd = "git fetch %s refs/pull/%s/head:%s && git checkout %s" % (self.repo.upstream_remote, self.new_branch_name, self.new_branch_name, self.new_branch_name)
+        self.process = subprocess.Popen(cmd, cwd=self.repo.dir, stdout=subprocess.PIPE, stderr=STDOUT, shell=True, preexec_fn=os.setsid)
+        GLib.io_add_watch(self.process.stdout,
+                          GLib.IO_IN,
+                          self.output_callback)
+        self.new_branch_name = ""
 
 class JobManager:
     def __init__(self, model):
@@ -166,6 +178,8 @@ class JobManager:
             job.build()
         elif job.type == JOB_NEW_BRANCH:
             job.new_branch()
+        elif job.type == JOB_CHECKOUT_PR:
+            job.pull_request()
 
 class Main:
     def __init__(self):
@@ -198,7 +212,7 @@ class Main:
 
     def start(self):
         self.builder = Gtk.Builder()
-        #self.builder.add_from_file("/home/mtwebster/bin/git-monkey/usr/lib/git-monkey/git-monkey.glade")
+        # self.builder.add_from_file("/home/mtwebster/bin/git-monkey/usr/lib/git-monkey/git-monkey.glade")
         self.builder.add_from_file("/usr/lib/git-monkey/git-monkey.glade")
         self.treebox = self.builder.get_object("treebox")
         self.window = self.builder.get_object("window")
@@ -210,6 +224,7 @@ class Main:
         self.output_scroller = self.builder.get_object("scroller")
         self.output = self.builder.get_object("output_view")
         self.new_branch = self.builder.get_object("new_branch")
+        self.pull_request_button = self.builder.get_object("pull_request")
 
         self.treeview = Gtk.TreeView()
         self.model = Gtk.TreeStore(object, str, str, str, str, GdkPixbuf.Pixbuf)
@@ -310,6 +325,13 @@ class Main:
         elif repo.state == STATE_NEW_BRANCH_DONE:
             cell.set_property("text", "New branch made")
 
+        elif repo.state == STATE_PULL_REQUEST_QUEUED:
+            cell.set_property("text", "Pull request checkout queued")
+        elif repo.state == STATE_PULL_REQUEST_IN_PROGRESS:
+            cell.set_property("text", "Checking out pull request...")
+        elif repo.state == STATE_PULL_REQUEST_CHECKED_OUT:
+            cell.set_property("text", "Pull request checked out")
+
     def abort_func(self, column, cell, model, iter, data=None):
         repo = model.get_value(iter, 0)
         if repo.state == STATE_NONE or repo.state >= STATE_NEW_BRANCH_DONE:
@@ -354,6 +376,7 @@ class Main:
         self.term_button.set_sensitive(False)
         self.new_branch.set_sensitive(False)
         self.rebase_button.set_sensitive(False)
+        self.pull_request_button.set_sensitive(False)
 
     def update_repos(self):
         row_iter = self.model.get_iter_first()
@@ -398,6 +421,7 @@ class Main:
             self.full_build_button.set_sensitive(True)
             self.new_branch.set_sensitive(True)
             self.rebase_button.set_sensitive(True)
+            self.pull_request_button.set_sensitive(True)
 
     def on_branch_combo_changed (self, widget):
         tree_iter = widget.get_active_iter()
@@ -408,7 +432,7 @@ class Main:
                 self.current_repo.state = STATE_NONE
             except git.exc.GitCommandError, detail:
                 self.inform_error("Could not change branches - you probably have uncommitted changes", str(detail))
-            self.parse_dirs()
+            self.update_repos()
 
     def on_refresh_clicked(self, button):
         self.parse_dirs()
@@ -433,12 +457,23 @@ class Main:
         job = Job(self.current_repo, JOB_BUILD, self.write_to_buffer, self.job_finished_callback)
         self.job_manager.add_job(job)
 
-    def on_new_branch_clicked(self,button):
+    def on_new_branch_clicked(self, button):
         new_branch = self.ask_new_branch_name("Enter a name for your new branch:")
         if new_branch is not None:
-            self.current_repo.new_branch_name = new_branch
             self.current_repo.state = STATE_NEW_BRANCH_QUEUED
             job = Job(self.current_repo, JOB_NEW_BRANCH, self.write_to_buffer, self.job_finished_callback)
+            job.new_branch_name = new_branch
+            self.job_manager.add_job(job)
+
+    def on_pull_request_clicked(self, button):
+        model, treeiter = self.treeview.get_selection().get_selected()
+        if treeiter:
+            name = self.model.get_value(treeiter, 4)
+        number = self.ask_pull_request_number("Enter the pull request number to checkout for <b>%s</b>" % (name))
+        if number is not None:
+            self.current_repo_state = STATE_PULL_REQUEST_QUEUED
+            job = Job(self.current_repo, JOB_CHECKOUT_PR, self.write_to_buffer, self.job_finished_callback)
+            job.new_branch_name = number
             self.job_manager.add_job(job)
 
     def on_terminal_clicked(self, button):
@@ -493,6 +528,8 @@ class Main:
                 job.repo.state = STATE_BUILT
             elif job.type == JOB_NEW_BRANCH:
                 job.repo.state = STATE_NEW_BRANCH_DONE
+            elif job.type == JOB_CHECKOUT_PR:
+                job.repo.state = STATE_PULL_REQUEST_CHECKED_OUT
         self.update_repos()
         return False
 
@@ -533,6 +570,36 @@ class Main:
             return None
         else:
             return None
+
+    def ask_pull_request_number(self, msg):
+        dialog = Gtk.MessageDialog(None,
+                                   Gtk.DialogFlags.DESTROY_WITH_PARENT,
+                                   Gtk.MessageType.QUESTION,
+                                   Gtk.ButtonsType.OK_CANCEL,
+                                   None)
+        dialog.set_default_size(400, 200)
+        dialog.set_markup(msg)
+        entry = Gtk.Entry()
+        entry.set_placeholder_text("Pull request number...")
+        box = dialog.get_message_area()
+        box.pack_start(entry, False, False, 3)
+        dialog.show_all()
+        response = dialog.run()
+        raw_str = entry.get_text().strip()
+        dialog.destroy()
+        valid = " " not in raw_str
+        try:
+            value = int(raw_str)
+        except ValueError:
+            valid = False
+        if response == Gtk.ResponseType.OK and valid and raw_str != "":
+            return raw_str
+        elif not valid:
+            self.inform_error("Invalid pull request number", "")
+            return None
+        else:
+            return None
+
 
     def inform_error(self, msg, detail):
         dialog = Gtk.MessageDialog(None,

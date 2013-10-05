@@ -255,15 +255,15 @@ class Main:
         self.treeview.append_column(column)
 
         column = Gtk.TreeViewColumn("Name", Gtk.CellRendererText(), markup=1)
-        column.set_min_width(250)
+        column.set_min_width(200)
         self.treeview.append_column(column)
         column = Gtk.TreeViewColumn("Current Branch", Gtk.CellRendererText(), markup=2)
-        column.set_min_width(250)
+        column.set_min_width(200)
         self.treeview.append_column(column)
         column = Gtk.TreeViewColumn("Default Upstream", Gtk.CellRendererText(), markup=4)
         self.treeview.append_column(column)
         column = Gtk.TreeViewColumn("Status", Gtk.CellRendererText(), markup=3)
-        column.set_max_width(100)
+        column.set_min_width(200)
         self.treeview.append_column(column)
         cell = Gtk.CellRendererText()
         column = Gtk.TreeViewColumn("Activity", cell)
@@ -438,12 +438,12 @@ class Main:
         self.parse_dirs()
 
     def on_clean_clicked(self, button):
-        self.current_repo.state = STATE_CLEANING
+        self.current_repo.state = STATE_CLEAN_QUEUED
         job = Job(self.current_repo, JOB_CLEAN, self.write_to_buffer, self.job_finished_callback)
         self.job_manager.add_job(job)
 
     def on_reset_clicked(self, button):
-        self.current_repo.state = STATE_RESETTING
+        self.current_repo.state = STATE_RESET_QUEUED
         job = Job(self.current_repo, JOB_RESET, self.write_to_buffer, self.job_finished_callback)
         self.job_manager.add_job(job)
 

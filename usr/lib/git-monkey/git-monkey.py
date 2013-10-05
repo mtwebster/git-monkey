@@ -20,11 +20,13 @@ STATE_BUILD_QUEUED = 7
 STATE_REBASE_QUEUED = 8
 STATE_CLEANING = 9
 STATE_RESETTING = 10
+STATE_NEW_BRANCH = 11
 
 JOB_BUILD = 1
 JOB_REBASE = 2
 JOB_RESET = 3
 JOB_CLEAN = 4
+JOB_NEW_BRANCH = 5
 
 def get_first(iterable, default=None):
     if iterable:
@@ -49,6 +51,7 @@ class Job:
         self.output_callback = output_callback
         self.finished_callback = finished_callback
         self.process = None
+        self.new_branch_name = ""
 
     def clean(self):
         self.repo.state = STATE_CLEANING
@@ -82,11 +85,21 @@ class Job:
                           GLib.IO_IN,
                           self.output_callback)
 
+    def new_branch(self):
+        cmd = "git checkout -b %s" % (self.new_branch_name)
+        self.process = subprocess.Popen(cmd, cwd=self.repo.dir, stdout=subprocess.PIPE, stderr=STDOUT, shell=True)
+        GLib.io_add_watch(self.process.stdout,
+                          GLib.IO_IN,
+                          self.output_callback)
+        self.new_branch_name = ""
+
+
 class JobManager:
-    def __init__(self):
+    def __init__(self, model):
         self.jobs = []
         self.busy = False
         self.current_job = None
+        self.model = model
         GObject.timeout_add(500, self.process_next_job)
 
     def add_job(self, job):
@@ -98,8 +111,11 @@ class JobManager:
             self.jobs.remove(job)
         return job
 
+    def model_signal_update(self, model, path, row_iter, data):
+        self.model.row_changed(path, row_iter)
+
     def process_next_job(self):
-        print "process"
+        self.model.foreach(self.model_signal_update, None)
         if self.busy:
             self.current_job.process.poll()
             if self.current_job.process.returncode is None:
@@ -123,6 +139,8 @@ class JobManager:
             job.rebase()
         elif job.type == JOB_BUILD:
             job.build()
+        elif job.type == JOB_NEW_BRANCH:
+            job.new_branch()
 
 class Main:
     def __init__(self):
@@ -168,8 +186,12 @@ class Main:
         self.output = self.builder.get_object("output_view")
         self.new_branch = self.builder.get_object("new_branch")
 
+        self.treeview = Gtk.TreeView()
+        self.model = Gtk.TreeStore(object, str, str, str, str)
+        self.combo_model = Gtk.ListStore(str, str)
+
         self.busy = False
-        self.job_manager = JobManager()
+        self.job_manager = JobManager(self.model)
 
         color = Gdk.RGBA()
         Gdk.RGBA.parse(color, "black")
@@ -183,7 +205,7 @@ class Main:
         self.window.connect("destroy", Gtk.main_quit)
         self.branch_combo = self.builder.get_object("branch_combo")
         self.branch_combo_changed_id = self.branch_combo.connect ("changed", self.on_branch_combo_changed)
-        self.treeview = Gtk.TreeView()
+
         self.builder.connect_signals(self)
         column = Gtk.TreeViewColumn("Name", Gtk.CellRendererText(), markup=1)
         column.set_min_width(250)
@@ -201,8 +223,7 @@ class Main:
         column.set_cell_data_func(cell, self.activity_func)
         self.treeview.append_column(column)
 
-        self.model = Gtk.TreeStore(object, str, str, str, str)
-        self.combo_model = Gtk.ListStore(str, str)
+
 
         self.current_repo = None
 
@@ -239,6 +260,8 @@ class Main:
             cell.set_property("text", "Reset")
         elif repo.state == STATE_REBASE_QUEUED:
             cell.set_property("text", "Rebase Queued")
+        elif repo.state == STATE_NEW_BRANCH:
+            cell.set_property("text", "New Branch")
 
     def parse_dirs(self):
         self.model.clear()
@@ -352,12 +375,10 @@ class Main:
     def on_new_branch_clicked(self,button):
         new_branch = self.ask_new_branch_name("Enter a name for your new branch:")
         if new_branch is not None:
-            cmd = "git checkout -b %s" % (new_branch)
-            process = subprocess.Popen(cmd, cwd=self.current_repo.dir, stdout=subprocess.PIPE, stderr=STDOUT, shell=True)
-            GLib.io_add_watch(process.stdout,
-                              GLib.IO_IN,
-                              self.write_to_buffer )
-        self.update_repos()
+            self.current_repo.new_branch_name = new_branch
+            self.current_repo.state = STATE_NEW_BRANCH
+            job = Job(self.current_repo, JOB_NEW_BRANCH, self.write_to_buffer, self.job_finished_callback)
+            self.job_manager.add_job(job)
 
     def on_build_all_clicked(self, button):
         row_iter = self.model.get_iter_first()

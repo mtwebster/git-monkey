@@ -253,7 +253,7 @@ class Main:
         GObject.timeout_add(500, self.busy_check, process)
 
     def on_terminal_clicked(self, button):
-        process = subprocess.Popen("gnome-terminal", cwd=self.current_repo.dir, shell=True)
+        subprocess.Popen("gnome-terminal", cwd=self.current_repo.dir, shell=True)
 
     def on_build_clicked(self, button):
         self.busy = True

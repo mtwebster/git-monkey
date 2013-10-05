@@ -11,3 +11,5 @@ That is,
 
 <path-to-git-project>   ,  <upstream remote name>  ,  <upstream tracking branch>
 
+There's a sample that has the current cinnamon stack in /usr/lib/git-monkey - 
+copy to your home, change the folder names, and rename to .git-monkey

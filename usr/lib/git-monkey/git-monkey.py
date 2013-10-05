@@ -46,17 +46,21 @@ class Main:
 
     def start(self):
         self.builder = Gtk.Builder()
-        # self.builder.add_from_file("/home/mtwebster/bin/git-monkey/usr/lib/git-monkey/git-monkey.glade")
-        self.builder.add_from_file("/usr/lib/git-monkey/git-monkey.glade")
+        self.builder.add_from_file("/home/mtwebster/bin/git-monkey/usr/lib/git-monkey/git-monkey.glade")
+        # self.builder.add_from_file("/usr/lib/git-monkey/git-monkey.glade")
         self.treebox = self.builder.get_object("treebox")
         self.window = self.builder.get_object("window")
         self.clean_button = self.builder.get_object("clean")
         self.reset_button = self.builder.get_object("reset")
+        self.rebase_button = self.builder.get_object("rebase")
         self.term_button = self.builder.get_object("terminal")
         self.full_build_button = self.builder.get_object("build")
         self.output_scroller = self.builder.get_object("scroller")
         self.output = self.builder.get_object("output_view")
         self.new_branch = self.builder.get_object("new_branch")
+
+        self.busy = False
+        self.job_queue = []
 
         color = Gdk.RGBA()
         Gdk.RGBA.parse(color, "black")
@@ -127,6 +131,15 @@ class Main:
         self.reset_button.set_sensitive(False)
         self.term_button.set_sensitive(False)
         self.new_branch.set_sensitive(False)
+        self.rebase_button.set_sensitive(False)
+
+    def update_repos(self):
+        row_iter = self.model.get_iter_first()
+        while row_iter != None:
+            repo = self.model.get_value(row_iter, 0)
+            self.model.set_value(row_iter, 2, repo.head.reference.name)
+            self.model.set_value(row_iter, 3, self.grab_repo_status(repo))
+            row_iter = self.model.iter_next(row_iter)
 
     def grab_repo_status(self, repo):
         untracked = len(repo.untracked_files) != 0
@@ -162,6 +175,7 @@ class Main:
             self.term_button.set_sensitive(True)
             self.full_build_button.set_sensitive(True)
             self.new_branch.set_sensitive(True)
+            self.rebase_button.set_sensitive(True)
 
     def on_branch_combo_changed (self, widget):
         tree_iter = widget.get_active_iter()
@@ -178,28 +192,33 @@ class Main:
 
     def on_clean_clicked(self, button):
         self.current_repo.git.clean("-fdx")
-        self.parse_dirs()
+        self.update_repos()
 
     def on_reset_clicked(self, button):
         self.current_repo.git.reset("--hard")
-        self.parse_dirs()
+        self.update_repos()
 
     def on_rebase_clicked(self, button):
+        self.busy = True
+
         cmd = "git pull --rebase %s %s" % (self.current_repo.upstream_remote, self.current_repo.upstream_branch)
 
         process = subprocess.Popen(cmd, cwd=self.current_repo.dir, stdout=subprocess.PIPE, stderr=STDOUT, shell=True)
         GLib.io_add_watch(process.stdout,
                           GLib.IO_IN,
                           self.write_to_buffer )
+        GObject.idle_add(self.busy_check, process)
 
     def on_terminal_clicked(self, button):
         process = subprocess.Popen("gnome-terminal", cwd=self.current_repo.dir, shell=True)
 
     def on_build_clicked(self, button):
+        self.busy = True
         process = subprocess.Popen("dpkg-buildpackage -j$((    $(cat /proc/cpuinfo | grep processor | wc -l)+1    ))", shell=True, cwd=self.current_repo.dir, stdout = subprocess.PIPE, stderr = STDOUT)
         GLib.io_add_watch(process.stdout,
                           GLib.IO_IN,
                           self.write_to_buffer )
+        GObject.idle_add(self.busy_check, process)
 
     def on_new_branch_clicked(self,button):
         new_branch = self.ask_new_branch_name("Enter a name for your new branch:")
@@ -214,15 +233,23 @@ class Main:
     def on_build_all_clicked(self, button):
         row_iter = self.model.get_iter_first()
         while row_iter != None:
-            self.current_repo = self.model.get_value(row_iter, 0)
-            self.on_build_clicked(None)
+            repo = self.model.get_value(row_iter, 0)
+            GObject.timeout_add(500, self.do_when_not_busy, self.on_build_clicked, repo)
             row_iter = self.model.iter_next(row_iter)
 
     def on_rebase_all_clicked(self, button):
         row_iter = self.model.get_iter_first()
         while row_iter != None:
-            self.current_repo = self.model.get_value(row_iter, 0)
-            self.on_rebase_clicked(None)
+            repo = self.model.get_value(row_iter, 0)
+            GObject.timeout_add(500, self.do_when_not_busy, self.on_rebase_clicked, repo)
+            row_iter = self.model.iter_next(row_iter)
+
+    def on_clean_reset_all_clicked(self, button):
+        row_iter = self.model.get_iter_first()
+        while row_iter != None:
+            repo = self.model.get_value(row_iter, 0)
+            GObject.timeout_add(500, self.do_when_not_busy, self.on_reset_clicked, repo)
+            GObject.timeout_add(500, self.do_when_not_busy, self.on_clean_clicked, repo)
             row_iter = self.model.iter_next(row_iter)
 
     def write_to_buffer(self, fd, condition):
@@ -231,11 +258,11 @@ class Main:
             buf = self.output.get_buffer()
             iter = buf.get_end_iter()
             buf.insert(iter, char)
-            iter = buf.get_end_iter()
-            self.output.scroll_to_iter(iter, .05, False, 0, 0)
-            # adj = self.output.get_vadjustment()
+            # iter = buf.get_end_iter()
+            # self.output.scroll_to_iter(iter, .05, False, 0, 0)
+            adj = self.output.get_vadjustment()
             # if adj.get_value() >= adj.get_upper() - adj.get_page_size() - 200.0:
-            #     adj.set_value(adj.get_upper())
+            adj.set_value(adj.get_upper())
             return True
         else:
             return False
@@ -306,6 +333,28 @@ class Main:
         dialog.destroy()
         return
 
+    def busy_check(self, process):
+        process.poll()
+        if process.returncode is not None:
+            self.busy = False
+            print "done"
+            self.update_repos()
+            return False
+        else:
+            print "busy"
+            return True
+
+    def do_when_not_busy(self, callback, repo):
+        if self.busy:
+            print "not starting yet"
+            return True
+        else:
+            self.current_repo = repo
+            print "starting"
+            callback(None)
+            return False
+
 if __name__ == "__main__":
     Main()
+    GObject.threads_init()
     Gtk.main()

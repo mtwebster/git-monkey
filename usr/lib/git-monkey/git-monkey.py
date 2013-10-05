@@ -18,6 +18,19 @@ STATE_CLEANED = 5
 STATE_RESET = 6
 STATE_BUILD_QUEUED = 7
 STATE_REBASE_QUEUED = 8
+STATE_CLEANING = 9
+STATE_RESETTING = 10
+
+JOB_BUILD = 1
+JOB_REBASE = 2
+JOB_RESET = 3
+JOB_CLEAN = 4
+
+def get_first(iterable, default=None):
+    if iterable:
+        for item in iterable:
+            return item
+    return default
 
 class GitRepo(git.Repo):
     def __init__(self, dir, upstream_remote, upstream_branch):
@@ -28,6 +41,88 @@ class GitRepo(git.Repo):
         self.upstream_remote = upstream_remote
         self.upstream_branch = upstream_branch
         self.state = STATE_NONE
+
+class Job:
+    def __init__(self, repo, job_type, output_callback, finished_callback):
+        self.repo = repo
+        self.type = job_type
+        self.output_callback = output_callback
+        self.finished_callback = finished_callback
+        self.process = None
+
+    def clean(self):
+        self.repo.state = STATE_CLEANING
+        cmd = "git clean -fdx"
+        self.process = subprocess.Popen(cmd, cwd=self.repo.dir, stdout=subprocess.PIPE, stderr=STDOUT, shell=True)
+        GLib.io_add_watch(self.process.stdout,
+                          GLib.IO_IN,
+                          self.output_callback)
+
+    def reset(self):
+        self.repo.state = STATE_RESETTING
+        cmd = "git reset --hard"
+        self.process = subprocess.Popen(cmd, cwd=self.repo.dir, stdout=subprocess.PIPE, stderr=STDOUT, shell=True)
+        GLib.io_add_watch(self.process.stdout,
+                          GLib.IO_IN,
+                          self.output_callback)
+
+    def rebase(self):
+        self.repo.state = STATE_REBASING
+        cmd = "git pull --rebase %s %s" % (self.repo.upstream_remote, self.repo.upstream_branch)
+
+        self.process = subprocess.Popen(cmd, cwd=self.repo.dir, stdout=subprocess.PIPE, stderr=STDOUT, shell=True)
+        GLib.io_add_watch(self.process.stdout,
+                          GLib.IO_IN,
+                          self.output_callback)
+
+    def build(self):
+        self.repo.state = STATE_BUILDING
+        self.process = subprocess.Popen("dpkg-buildpackage -j$((    $(cat /proc/cpuinfo | grep processor | wc -l)+1    ))", shell=True, cwd=self.repo.dir, stdout = subprocess.PIPE, stderr = STDOUT)
+        GLib.io_add_watch(self.process.stdout,
+                          GLib.IO_IN,
+                          self.output_callback)
+
+class JobManager:
+    def __init__(self):
+        self.jobs = []
+        self.busy = False
+        self.current_job = None
+        GObject.timeout_add(500, self.process_next_job)
+
+    def add_job(self, job):
+        self.jobs.append(job)
+
+    def get_job_from_stack(self):
+        job = get_first(self.jobs)
+        if job:
+            self.jobs.remove(job)
+        return job
+
+    def process_next_job(self):
+        print "process"
+        if self.busy:
+            self.current_job.process.poll()
+            if self.current_job.process.returncode is None:
+                return True
+            else:
+                self.busy = False
+                GObject.idle_add(self.current_job.finished_callback, self.current_job)
+        job = self.get_job_from_stack()
+        if job:
+            self.current_job = job
+            self.do_job_work(job)
+        return True
+
+    def do_job_work(self, job):
+        self.busy = True
+        if job.type == JOB_CLEAN:
+            job.clean()
+        elif job.type == JOB_RESET:
+            job.reset()
+        elif job.type == JOB_REBASE:
+            job.rebase()
+        elif job.type == JOB_BUILD:
+            job.build()
 
 class Main:
     def __init__(self):
@@ -60,8 +155,8 @@ class Main:
 
     def start(self):
         self.builder = Gtk.Builder()
-        # self.builder.add_from_file("/home/mtwebster/bin/git-monkey/usr/lib/git-monkey/git-monkey.glade")
-        self.builder.add_from_file("/usr/lib/git-monkey/git-monkey.glade")
+        self.builder.add_from_file("/home/mtwebster/bin/git-monkey/usr/lib/git-monkey/git-monkey.glade")
+        # self.builder.add_from_file("/usr/lib/git-monkey/git-monkey.glade")
         self.treebox = self.builder.get_object("treebox")
         self.window = self.builder.get_object("window")
         self.clean_button = self.builder.get_object("clean")
@@ -74,7 +169,7 @@ class Main:
         self.new_branch = self.builder.get_object("new_branch")
 
         self.busy = False
-        self.job_queue = []
+        self.job_manager = JobManager()
 
         color = Gdk.RGBA()
         Gdk.RGBA.parse(color, "black")
@@ -232,37 +327,27 @@ class Main:
         self.parse_dirs()
 
     def on_clean_clicked(self, button):
-        self.current_repo.git.clean("-fdx")
-        self.current_repo.state = STATE_CLEANED
-        self.update_repos()
+        self.current_repo.state = STATE_CLEANING
+        job = Job(self.current_repo, JOB_CLEAN, self.write_to_buffer, self.job_finished_callback)
+        self.job_manager.add_job(job)
 
     def on_reset_clicked(self, button):
-        self.current_repo.git.reset("--hard")
-        self.current_repo.state = STATE_RESET
-        self.update_repos()
+        self.current_repo.state = STATE_RESETTING
+        job = Job(self.current_repo, JOB_RESET, self.write_to_buffer, self.job_finished_callback)
+        self.job_manager.add_job(job)
 
     def on_rebase_clicked(self, button):
-        self.busy = True
-        self.current_repo.state = STATE_REBASING
-        cmd = "git pull --rebase %s %s" % (self.current_repo.upstream_remote, self.current_repo.upstream_branch)
+        self.current_repo.state = STATE_REBASE_QUEUED
+        job = Job(self.current_repo, JOB_REBASE, self.write_to_buffer, self.job_finished_callback)
+        self.job_manager.add_job(job)
 
-        process = subprocess.Popen(cmd, cwd=self.current_repo.dir, stdout=subprocess.PIPE, stderr=STDOUT, shell=True)
-        GLib.io_add_watch(process.stdout,
-                          GLib.IO_IN,
-                          self.write_to_buffer )
-        GObject.timeout_add(500, self.busy_check, process)
+    def on_build_clicked(self, button):
+        self.current_repo.state = STATE_BUILD_QUEUED
+        job = Job(self.current_repo, JOB_BUILD, self.write_to_buffer, self.job_finished_callback)
+        self.job_manager.add_job(job)
 
     def on_terminal_clicked(self, button):
         subprocess.Popen("gnome-terminal", cwd=self.current_repo.dir, shell=True)
-
-    def on_build_clicked(self, button):
-        self.busy = True
-        self.current_repo.state = STATE_BUILDING
-        process = subprocess.Popen("dpkg-buildpackage -j$((    $(cat /proc/cpuinfo | grep processor | wc -l)+1    ))", shell=True, cwd=self.current_repo.dir, stdout = subprocess.PIPE, stderr = STDOUT)
-        GLib.io_add_watch(process.stdout,
-                          GLib.IO_IN,
-                          self.write_to_buffer )
-        GObject.timeout_add(500, self.busy_check, process)
 
     def on_new_branch_clicked(self,button):
         new_branch = self.ask_new_branch_name("Enter a name for your new branch:")
@@ -277,25 +362,23 @@ class Main:
     def on_build_all_clicked(self, button):
         row_iter = self.model.get_iter_first()
         while row_iter != None:
-            repo = self.model.get_value(row_iter, 0)
-            repo.state = STATE_BUILD_QUEUED
-            GObject.timeout_add(500, self.do_when_not_busy, self.on_build_clicked, repo)
+            self.current_repo = self.model.get_value(row_iter, 0)
+            self.on_build_clicked(None)
             row_iter = self.model.iter_next(row_iter)
 
     def on_rebase_all_clicked(self, button):
         row_iter = self.model.get_iter_first()
         while row_iter != None:
-            repo = self.model.get_value(row_iter, 0)
-            repo.state = STATE_REBASE_QUEUED
-            GObject.timeout_add(500, self.do_when_not_busy, self.on_rebase_clicked, repo)
+            self.current_repo = self.model.get_value(row_iter, 0)
+            self.on_rebase_clicked(None)
             row_iter = self.model.iter_next(row_iter)
 
     def on_clean_reset_all_clicked(self, button):
         row_iter = self.model.get_iter_first()
         while row_iter != None:
-            repo = self.model.get_value(row_iter, 0)
-            GObject.timeout_add(500, self.do_when_not_busy, self.on_reset_clicked, repo)
-            GObject.timeout_add(500, self.do_when_not_busy, self.on_clean_clicked, repo)
+            self.current_repo = self.model.get_value(row_iter, 0)
+            self.on_reset_clicked(None)
+            self.on_clean_clicked(None)
             row_iter = self.model.iter_next(row_iter)
 
     def write_to_buffer(self, fd, condition):
@@ -312,6 +395,18 @@ class Main:
             return True
         else:
             return False
+
+    def job_finished_callback(self, job):
+        if job.type == JOB_RESET:
+            job.repo.state = STATE_RESET
+        elif job.type == JOB_CLEAN:
+            job.repo.state = STATE_CLEANED
+        elif job.type == JOB_REBASE:
+            job.repo.state = STATE_REBASED
+        elif job.type == JOB_BUILD:
+            job.repo.state = STATE_BUILT
+        self.update_repos()
+        return False
 
     def ask(self, msg):
         dialog = Gtk.MessageDialog(None,
@@ -378,27 +473,6 @@ class Main:
         response = dialog.run()
         dialog.destroy()
         return
-
-    def busy_check(self, process):
-        process.poll()
-        if process.returncode is not None:
-            self.busy = False
-            self.update_repos()
-            if self.current_repo.state == STATE_BUILDING:
-                self.current_repo.state = STATE_BUILT
-            elif self.current_repo.state == STATE_REBASING:
-                self.current_repo.state = STATE_REBASED
-            return False
-        else:
-            return True
-
-    def do_when_not_busy(self, callback, repo):
-        if self.busy:
-            return True
-        else:
-            self.current_repo = repo
-            callback(None)
-            return False
 
 if __name__ == "__main__":
     Main()

@@ -60,8 +60,8 @@ class Main:
 
     def start(self):
         self.builder = Gtk.Builder()
-        self.builder.add_from_file("/home/mtwebster/bin/git-monkey/usr/lib/git-monkey/git-monkey.glade")
-        # self.builder.add_from_file("/usr/lib/git-monkey/git-monkey.glade")
+        # self.builder.add_from_file("/home/mtwebster/bin/git-monkey/usr/lib/git-monkey/git-monkey.glade")
+        self.builder.add_from_file("/usr/lib/git-monkey/git-monkey.glade")
         self.treebox = self.builder.get_object("treebox")
         self.window = self.builder.get_object("window")
         self.clean_button = self.builder.get_object("clean")

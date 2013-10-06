@@ -225,6 +225,7 @@ class Main:
         self.output = self.builder.get_object("output_view")
         self.new_branch = self.builder.get_object("new_branch")
         self.pull_request_button = self.builder.get_object("pull_request")
+        self.master_button = self.builder.get_object("master")
 
         self.treeview = Gtk.TreeView()
         self.model = Gtk.TreeStore(object, str, str, str, str, GdkPixbuf.Pixbuf)
@@ -385,6 +386,10 @@ class Main:
             self.model.set_value(row_iter, 2, repo.head.reference.name)
             self.model.set_value(row_iter, 3, self.grab_repo_status(repo))
             row_iter = self.model.iter_next(row_iter)
+        self.clean_button.set_sensitive(len(self.current_repo.untracked_files) != 0)
+        self.reset_button.set_sensitive(self.current_repo.is_dirty())
+        self.master_button.set_sensitive(self.current_repo.head.reference.name != self.current_repo.upstream_branch)
+
 
     def grab_repo_status(self, repo):
         untracked = len(repo.untracked_files) != 0
@@ -425,6 +430,7 @@ class Main:
             self.new_branch.set_sensitive(True)
             self.rebase_button.set_sensitive(True)
             self.pull_request_button.set_sensitive(True)
+            self.master_button.set_sensitive(repo.head.reference.name != repo.upstream_branch)
 
     def on_branch_combo_changed (self, widget):
         tree_iter = widget.get_active_iter()
@@ -471,7 +477,7 @@ class Main:
     def on_pull_request_clicked(self, button):
         model, treeiter = self.treeview.get_selection().get_selected()
         if treeiter:
-            name = self.model.get_value(treeiter, 4)
+            name = self.model.get_value(treeiter, 1)
         number = self.ask_pull_request_number("Enter the pull request number to checkout for <b>%s</b>" % (name))
         if number is not None:
             self.current_repo_state = STATE_PULL_REQUEST_QUEUED
@@ -481,6 +487,15 @@ class Main:
 
     def on_terminal_clicked(self, button):
         subprocess.Popen("gnome-terminal", cwd=self.current_repo.dir, shell=True)
+
+    def on_master_clicked(self, button):
+        try:
+            self.current_repo.git.checkout(self.current_repo.upstream_branch)
+            self.current_repo.state = STATE_NONE
+        except git.exc.GitCommandError, detail:
+            self.inform_error("Could not change branches - you probably have uncommitted changes", str(detail))
+        self.update_repos()
+        self.update_branch_combo(self.current_repo)
 
     def on_build_all_clicked(self, button):
         row_iter = self.model.get_iter_first()

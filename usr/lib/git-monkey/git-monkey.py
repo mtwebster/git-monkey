@@ -212,8 +212,8 @@ class Main:
 
     def start(self):
         self.builder = Gtk.Builder()
-        # self.builder.add_from_file("/home/mtwebster/bin/git-monkey/usr/lib/git-monkey/git-monkey.glade")
-        self.builder.add_from_file("/usr/lib/git-monkey/git-monkey.glade")
+        self.builder.add_from_file("/home/mtwebster/bin/git-monkey/usr/lib/git-monkey/git-monkey.glade")
+        # self.builder.add_from_file("/usr/lib/git-monkey/git-monkey.glade")
         self.treebox = self.builder.get_object("treebox")
         self.window = self.builder.get_object("window")
         self.clean_button = self.builder.get_object("clean")
@@ -398,23 +398,26 @@ class Main:
         elif dirty and not untracked:
             return "<b><span color='#DF0101'>Uncommitted</span></b>"
 
+    def update_branch_combo(self, repo):
+        self.combo_model.clear()
+        current_iter = None
+        for head in repo.heads:
+            iter = self.combo_model.insert_before(None, None)
+            self.combo_model.set_value(iter, 0, head.name)
+            self.combo_model.set_value(iter, 1, head.name)
+            if repo.head.reference.name == head.name:
+                current_iter = iter
+        if current_iter is not None:
+            self.branch_combo.handler_block(self.branch_combo_changed_id)
+            self.branch_combo.set_active_iter(current_iter)
+            self.branch_combo.handler_unblock(self.branch_combo_changed_id)
+
     def selection_changed(self):
         model, treeiter = self.treeview.get_selection().get_selected()
         if treeiter:
             repo = self.model.get_value(treeiter, 0)
             self.current_repo = repo
-            self.combo_model.clear()
-            current_iter = None
-            for head in repo.heads:
-                iter = self.combo_model.insert_before(None, None)
-                self.combo_model.set_value(iter, 0, head.name)
-                self.combo_model.set_value(iter, 1, head.name)
-                if repo.head.reference.name == head.name:
-                    current_iter = iter
-            if current_iter is not None:
-                self.branch_combo.handler_block(self.branch_combo_changed_id)
-                self.branch_combo.set_active_iter(current_iter)
-                self.branch_combo.handler_unblock(self.branch_combo_changed_id)
+            self.update_branch_combo(repo)
             self.clean_button.set_sensitive(len(repo.untracked_files) != 0)
             self.reset_button.set_sensitive(repo.is_dirty())
             self.term_button.set_sensitive(True)
@@ -531,6 +534,7 @@ class Main:
             elif job.type == JOB_CHECKOUT_PR:
                 job.repo.state = STATE_PULL_REQUEST_CHECKED_OUT
         self.update_repos()
+        self.update_branch_combo(job.repo)
         return False
 
     def ask(self, msg):
@@ -563,11 +567,12 @@ class Main:
         raw_str = entry.get_text().strip()
         dialog.destroy()
         valid = " " not in raw_str
-        if response == Gtk.ResponseType.OK and valid and raw_str != "":
-            return raw_str
-        elif not valid:
-            self.inform_error("Invalid branch name - no spaces allowed", "")
-            return None
+        if response == Gtk.ResponseType.OK:
+            if valid and raw_str != "":
+                return raw_str
+            else:
+                self.inform_error("Invalid branch name - no spaces allowed", "")
+                return None
         else:
             return None
 
@@ -592,11 +597,13 @@ class Main:
             value = int(raw_str)
         except ValueError:
             valid = False
-        if response == Gtk.ResponseType.OK and valid and raw_str != "":
-            return raw_str
-        elif not valid:
-            self.inform_error("Invalid pull request number", "")
-            return None
+        
+        if response == Gtk.ResponseType.OK:
+            if valid and raw_str != "":
+                return raw_str
+            else:
+                self.inform_error("Invalid pull request number", "")
+                return None
         else:
             return None
 

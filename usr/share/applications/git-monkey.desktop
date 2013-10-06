@@ -5,5 +5,5 @@ Name=Git Monkey
 Exec=git-monkey
 Type=Application
 Icon=face-monkey
-Categories=Programming;
+Categories=Development;
 

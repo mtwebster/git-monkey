@@ -1,0 +1,9 @@
+[Desktop Entry]
+Comment=Launch Git Monkey, a git project management hub
+Terminal=false
+Name=Git Monkey
+Exec=git-monkey
+Type=Application
+Icon=face-monkey
+Categories=Programming;
+

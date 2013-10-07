@@ -5,9 +5,18 @@ import signal
 from subprocess import STDOUT
 import subprocess
 import git
-from gi.repository import Gdk, Gtk, GObject, GLib, Pango, GdkPixbuf
+from gi.repository import Gdk, Gtk, GObject, GLib, Pango, GdkPixbuf, Gio
 GObject.threads_init()
 home = os.path.expanduser("~")
+
+SCHEMA = "com.linuxmint.git-monkey"
+
+BUILD_KEY = "build-command"
+
+if False:
+    BUILDER_FILE = "/usr/lib/git-monkey/git-monkey.glade"
+else:
+    BUILDER_FILE = "/home/mtwebster/bin/git-monkey/usr/lib/git-monkey/git-monkey.glade"
 
 STATE_NONE = -1
 
@@ -212,8 +221,7 @@ class Main:
 
     def start(self):
         self.builder = Gtk.Builder()
-        # self.builder.add_from_file("/home/mtwebster/bin/git-monkey/usr/lib/git-monkey/git-monkey.glade")
-        self.builder.add_from_file("/usr/lib/git-monkey/git-monkey.glade")
+        self.builder.add_from_file(BUILDER_FILE)
         self.treebox = self.builder.get_object("treebox")
         self.window = self.builder.get_object("window")
         self.clean_button = self.builder.get_object("clean")
@@ -226,6 +234,7 @@ class Main:
         self.new_branch = self.builder.get_object("new_branch")
         self.pull_request_button = self.builder.get_object("pull_request")
         self.master_button = self.builder.get_object("master")
+        self.prefs_dialog = self.builder.get_object("prefs_dialog")
 
         self.treeview = Gtk.TreeView()
         self.model = Gtk.TreeStore(object, str, str, str, str, GdkPixbuf.Pixbuf)
@@ -283,6 +292,9 @@ class Main:
         self.treebox.add(self.treeview)
         self.treeview.get_selection().connect("changed", lambda x: self.selection_changed());
         self.treeview.connect('button_press_event', self.on_button_press_event)
+
+        self.setup_prefs()
+
         self.window.show_all()
 
     def activity_func(self, column, cell, model, iter, data=None):
@@ -519,6 +531,9 @@ class Main:
             self.on_clean_clicked(None)
             row_iter = self.model.iter_next(row_iter)
 
+    def on_prefs_button_clicked(self, button):
+        self.prefs_dialog.present()
+
     def write_to_buffer(self, fd, condition):
         if condition == GLib.IO_IN:
             char = fd.readline()
@@ -650,6 +665,14 @@ class Main:
         response = dialog.run()
         dialog.destroy()
         return
+
+    def on_prefs_close_clicked(self, button):
+        self.prefs_dialog.hide()
+
+    def setup_prefs(self):
+        self.settings_build_entry = self.builder.get_object("settings_build_entry")
+        self.settings = Gio.Settings.new(SCHEMA)
+        self.settings.bind(BUILD_KEY, self.settings_build_entry, "text", Gio.Settings.BindFlags.DEFAULT)
 
 if __name__ == "__main__":
     Main()

@@ -13,3 +13,10 @@ That is,
 
 There's a sample that has the current cinnamon stack in /usr/lib/git-monkey - 
 copy to your home, change the folder names, and rename to .git-monkey
+
+
+
+TODO:
+
+- Add more config options, add repos by picking folder and automagically acquiring upstream and remotes to select
+- Add more developer options - commit, push, auto-open url of pull request.

@@ -13,7 +13,7 @@ SCHEMA = "com.linuxmint.git-monkey"
 
 BUILD_KEY = "build-command"
 
-if False:
+if True:
     BUILDER_FILE = "/usr/lib/git-monkey/git-monkey.glade"
 else:
     BUILDER_FILE = "/home/mtwebster/bin/git-monkey/usr/lib/git-monkey/git-monkey.glade"

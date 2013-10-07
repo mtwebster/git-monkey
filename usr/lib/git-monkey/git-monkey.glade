@@ -66,8 +66,9 @@
               <object class="GtkEntry" id="settings_build_entry">
                 <property name="width_request">500</property>
                 <property name="visible">True</property>
-                <property name="can_focus">False</property>
+                <property name="can_focus">True</property>
                 <property name="invisible_char">●</property>
+                <property name="placeholder_text">Enter build string...</property>
               </object>
               <packing>
                 <property name="left_attach">0</property>

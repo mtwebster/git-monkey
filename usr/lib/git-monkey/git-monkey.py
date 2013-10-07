@@ -101,7 +101,11 @@ class Job:
 
     def build(self):
         self.repo.state = STATE_BUILDING
-        self.process = subprocess.Popen("dpkg-buildpackage -j$((    $(cat /proc/cpuinfo | grep processor | wc -l)+1    ))", shell=True, cwd=self.repo.dir, stdout = subprocess.PIPE, stderr = STDOUT, preexec_fn=os.setsid)
+
+        settings = Gio.Settings.new(SCHEMA)
+        cmd = settings.get_string(BUILD_KEY)
+
+        self.process = subprocess.Popen(cmd, shell=True, cwd=self.repo.dir, stdout = subprocess.PIPE, stderr = STDOUT, preexec_fn=os.setsid)
         GLib.io_add_watch(self.process.stdout,
                           GLib.IO_IN,
                           self.output_callback)
@@ -672,7 +676,7 @@ class Main:
     def setup_prefs(self):
         self.settings_build_entry = self.builder.get_object("settings_build_entry")
         self.settings = Gio.Settings.new(SCHEMA)
-        self.settings.bind(BUILD_KEY, self.settings_build_entry, "text", Gio.Settings.BindFlags.DEFAULT)
+        self.settings.bind(BUILD_KEY, self.settings_build_entry, "text", Gio.SettingsBindFlags.DEFAULT)
 
 if __name__ == "__main__":
     Main()

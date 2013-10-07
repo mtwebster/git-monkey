@@ -1,0 +1,11 @@
+<schemalist>
+    <schema id="com.linuxmint.git-monkey" path="/com/linuxmint/git-monkey/">
+        <key name="build-command" type="s">
+            <default>"dpkg-buildpackage -j$((    $(cat /proc/cpuinfo | grep processor | wc -l)+1    ))"</default>
+            <summary>Command to execute for build button</summary>
+            <description>
+                You can customize the command ran when the build job/button is run
+            </description>
+        </key>
+    </schema>
+</schemalist>

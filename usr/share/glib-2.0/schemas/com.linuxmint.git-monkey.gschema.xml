@@ -7,5 +7,10 @@
                 You can customize the command ran when the build job/button is run
             </description>
         </key>
+        <key name="repos" type="as">
+          <default>[]</default>
+          <summary>Repo List</summary>
+          <description>List of repos - name:remote:branch</description>
+        </key>
     </schema>
 </schemalist>

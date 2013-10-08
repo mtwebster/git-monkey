@@ -1,19 +1,22 @@
 #!/usr/bin/env python
 
 import os
+import sys
 import signal
 from subprocess import STDOUT
 import subprocess
 import git
+import repoedit
 from gi.repository import Gdk, Gtk, GObject, GLib, Pango, GdkPixbuf, Gio
 GObject.threads_init()
 home = os.path.expanduser("~")
 
 SCHEMA = "com.linuxmint.git-monkey"
 
-BUILD_KEY = "build-command"
+KEY_BUILD = "build-command"
+KEY_REPOS = "repos"
 
-if True:
+if False:
     BUILDER_FILE = "/usr/lib/git-monkey/git-monkey.glade"
 else:
     BUILDER_FILE = "/home/mtwebster/bin/git-monkey/usr/lib/git-monkey/git-monkey.glade"
@@ -103,7 +106,7 @@ class Job:
         self.repo.state = STATE_BUILDING
 
         settings = Gio.Settings.new(SCHEMA)
-        cmd = settings.get_string(BUILD_KEY)
+        cmd = settings.get_string(KEY_BUILD)
 
         self.process = subprocess.Popen(cmd, shell=True, cwd=self.repo.dir, stdout = subprocess.PIPE, stderr = STDOUT, preexec_fn=os.setsid)
         GLib.io_add_watch(self.process.stdout,
@@ -196,11 +199,10 @@ class JobManager:
 
 class Main:
     def __init__(self):
-        self.config_path = os.path.join(home, ".git-monkey")
-        if os.path.exists(self.config_path):
-            self.start()
-        else:
+        if len(sys.argv) > 1 and sys.argv[1] == "--help":
             self.end()
+        else:
+            self.start()
 
     def end(self):
         print """
@@ -224,6 +226,7 @@ class Main:
         quit()
 
     def start(self):
+        self.settings = Gio.Settings.new(SCHEMA)
         self.builder = Gtk.Builder()
         self.builder.add_from_file(BUILDER_FILE)
         self.treebox = self.builder.get_object("treebox")
@@ -239,6 +242,9 @@ class Main:
         self.pull_request_button = self.builder.get_object("pull_request")
         self.master_button = self.builder.get_object("master")
         self.prefs_dialog = self.builder.get_object("prefs_dialog")
+        self.repo_dialog = self.builder.get_object("repo_dialog")
+        self.add_repo_button = self.builder.get_object("add_repo_button")
+        self.remove_repo_button = self.builder.get_object("remove_repo_button")
 
         self.treeview = Gtk.TreeView()
         self.model = Gtk.TreeStore(object, str, str, str, str, GdkPixbuf.Pixbuf)
@@ -294,10 +300,12 @@ class Main:
         self.branch_combo.add_attribute(cell, "text", 0)
 
         self.treebox.add(self.treeview)
-        self.treeview.get_selection().connect("changed", lambda x: self.selection_changed());
+        self.treeview.get_selection().connect("changed", lambda x: self.selection_changed())
         self.treeview.connect('button_press_event', self.on_button_press_event)
 
         self.setup_prefs()
+
+        self.settings.connect("changed::" + KEY_REPOS, lambda x,y: self.parse_dirs())
 
         self.window.show_all()
 
@@ -368,26 +376,26 @@ class Main:
 
     def parse_dirs(self):
         self.model.clear()
-        file = open(self.config_path)
-        raw = file.read()
-        lines = raw.split("\n")
-        file.close()
-        for line in lines:
-            try:
-                d, remote, remote_branch = line.replace(" ", "").split(",")
-                if not os.path.exists(d):
-                    continue
-                repo = GitRepo(d, remote, remote_branch)
+        repos = self.settings.get_strv(KEY_REPOS)
 
-                iter = self.model.insert_before(None, None)
-                self.model.set_value(iter, 0, repo)
-                self.model.set_value(iter, 1, repo.name)
-                self.model.set_value(iter, 2, repo.head.reference.name)
-                self.model.set_value(iter, 3, self.grab_repo_status(repo))
-                us_string = "%s/%s" % (repo.upstream_remote, repo.upstream_branch)
-                self.model.set_value(iter, 4, us_string)
-            except ValueError:
-                pass
+        for repo in repos:
+            if len(repo.split(":")) != 3:
+                print "Malformed repo entry: ", repo
+                continue
+            d, remote, remote_branch = repo.split(":")
+            if not os.path.exists(d):
+                print "Non-existant repo directory: ", d
+                continue
+            repo = GitRepo(d, remote, remote_branch)
+
+            iter = self.model.insert_before(None, None)
+            self.model.set_value(iter, 0, repo)
+            self.model.set_value(iter, 1, repo.name)
+            self.model.set_value(iter, 2, repo.head.reference.name)
+            self.model.set_value(iter, 3, self.grab_repo_status(repo))
+            us_string = "%s/%s" % (repo.upstream_remote, repo.upstream_branch)
+            self.model.set_value(iter, 4, us_string)
+
         self.clean_button.set_sensitive(False)
         self.reset_button.set_sensitive(False)
         self.term_button.set_sensitive(False)
@@ -538,6 +546,25 @@ class Main:
     def on_prefs_button_clicked(self, button):
         self.prefs_dialog.present()
 
+    def on_add_repo_button_clicked(self, button):
+        dialog = repoedit.EditRepo()
+
+    def on_remove_repo_button_clicked(self, button):
+        settings = Gio.Settings.new(SCHEMA)
+        repo_list = settings.get_strv(KEY_REPOS)
+
+        existing = False
+
+        for item in repo_list:
+            name, remote, branch = item.split(":")
+            print name, self.current_repo.dir
+            if name == self.current_repo.dir:
+                existing = True
+                break
+        if existing:
+            repo_list.remove(item)
+            settings.set_strv(KEY_REPOS, repo_list)
+
     def write_to_buffer(self, fd, condition):
         if condition == GLib.IO_IN:
             char = fd.readline()
@@ -675,10 +702,8 @@ class Main:
 
     def setup_prefs(self):
         self.settings_build_entry = self.builder.get_object("settings_build_entry")
-        self.settings = Gio.Settings.new(SCHEMA)
-        self.settings.bind(BUILD_KEY, self.settings_build_entry, "text", Gio.SettingsBindFlags.DEFAULT)
+        self.settings.bind(KEY_BUILD, self.settings_build_entry, "text", Gio.SettingsBindFlags.DEFAULT)
 
 if __name__ == "__main__":
     Main()
-    GObject.threads_init()
     Gtk.main()

@@ -275,20 +275,27 @@ class Main:
         self.treeview.append_column(column)
 
         column = Gtk.TreeViewColumn("Name", Gtk.CellRendererText(), markup=1)
+        column.set_sort_column_id(1)
         column.set_min_width(200)
         self.treeview.append_column(column)
         column = Gtk.TreeViewColumn("Current Branch", Gtk.CellRendererText(), markup=2)
+        column.set_sort_column_id(2)
         column.set_min_width(200)
         self.treeview.append_column(column)
         column = Gtk.TreeViewColumn("Default Upstream", Gtk.CellRendererText(), markup=4)
+        column.set_sort_column_id(4)
         self.treeview.append_column(column)
         column = Gtk.TreeViewColumn("Status", Gtk.CellRendererText(), markup=3)
+        column.set_sort_column_id(3)
         column.set_min_width(200)
         self.treeview.append_column(column)
         cell = Gtk.CellRendererText()
         column = Gtk.TreeViewColumn("Activity", cell)
         column.set_cell_data_func(cell, self.activity_func)
         self.treeview.append_column(column)
+
+        self.model.set_sort_column_id(1, Gtk.SortType.ASCENDING)
+
         self.current_repo = None
 
         self.parse_dirs()

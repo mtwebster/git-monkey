@@ -373,6 +373,10 @@ class Main:
                     iter = self.model.get_iter(path)
                     repo = self.model.get_value(iter, 0)
                     self.job_manager.find_and_abort(repo)
+                elif event.type == Gdk.EventType._2BUTTON_PRESS:
+                    iter = self.model.get_iter(path)
+                    repo = self.model.get_value(iter, 0)
+                    repoedit.EditRepo(repo.dir, repo.upstream_remote, repo.upstream_branch)
 
     def parse_dirs(self):
         self.model.clear()
@@ -402,6 +406,8 @@ class Main:
         self.new_branch.set_sensitive(False)
         self.rebase_button.set_sensitive(False)
         self.pull_request_button.set_sensitive(False)
+        self.branch_combo.set_sensitive(False)
+        self.remove_repo_button.set_sensitive(False)
 
     def update_repos(self):
         row_iter = self.model.get_iter_first()
@@ -454,6 +460,8 @@ class Main:
             self.new_branch.set_sensitive(True)
             self.rebase_button.set_sensitive(True)
             self.pull_request_button.set_sensitive(True)
+            self.branch_combo.set_sensitive(True)
+            self.remove_repo_button.set_sensitive(True)
             self.master_button.set_sensitive(repo.head.reference.name != repo.upstream_branch)
 
     def on_branch_combo_changed (self, widget):

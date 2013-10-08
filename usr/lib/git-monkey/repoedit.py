@@ -46,7 +46,7 @@ class EditRepo:
         self.repo = None
 
         if self.dir is not None:
-            self.folder_button.set_text(self.dir)
+            self.folder_button.set_label(self.dir)
             self.repo = git.Repo(self.dir)
             if self.upstream_remote is not None:
                 self.setup_upstream_remote()
@@ -107,7 +107,7 @@ class EditRepo:
             iter = self.branch_model.insert_before(None, None)
             name = branch.name.replace("%s/" % (self.upstream_remote), "")
             self.branch_model.set_value(iter, 0, name)
-            if self.upstream_branch is not None and branch.name == self.upstream_branch:
+            if self.upstream_branch is not None and name == self.upstream_branch:
                 active_iter = iter
         self.us_branch_combo.set_sensitive(True)
         if active_iter:

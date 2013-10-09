@@ -209,19 +209,7 @@ class Main:
         print """
               git-monkey: a simple repo manager for debian-based projects.
 
-              To use, you need file in your home folder called ".git-monkey".
-
-              Within it, you put entries like this:
-
-              /home/mtwebster/bin/cinnamon, mint, master
-              /home/mtwebster/bin/cinnamon-session, origin, master
-
-              That is, 
-
-              <path-to-git-project>   ,  <upstream remote name>  ,  <upstream tracking branch>
-
-              There's a sample that has the current cinnamon stack in /usr/lib/git-monkey - 
-              copy to your home, change the folder names, and rename to .git-monkey
+              Run git-monkey, then click the + to add git repos to work with.
 
               """
         quit()

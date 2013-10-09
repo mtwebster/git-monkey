@@ -7,49 +7,18 @@ from subprocess import STDOUT
 import subprocess
 import git
 import repoedit
+from constants import *
 from gi.repository import Gdk, Gtk, GObject, GLib, Pango, GdkPixbuf, Gio
 GObject.threads_init()
 home = os.path.expanduser("~")
 
-SCHEMA = "com.linuxmint.git-monkey"
+s = Gio.Settings.new(SCHEMA)
 
-KEY_BUILD = "build-command"
-KEY_REPOS = "repos"
-
-if False:
+if not s.get_boolean(KEY_DEV_MODE):
     BUILDER_FILE = "/usr/lib/git-monkey/git-monkey.glade"
 else:
-    BUILDER_FILE = "/home/mtwebster/bin/git-monkey/usr/lib/git-monkey/git-monkey.glade"
-
-STATE_NONE = -1
-
-STATE_BUILDING = 2
-STATE_REBASING = 3
-STATE_CLEANING = 4
-STATE_RESETTING = 5
-STATE_NEW_BRANCH_IN_PROGRESS = 6
-STATE_PULL_REQUEST_IN_PROGRESS = 7
-
-STATE_NEW_BRANCH_QUEUED = 8
-STATE_CLEAN_QUEUED = 9
-STATE_RESET_QUEUED = 10
-STATE_BUILD_QUEUED = 11
-STATE_REBASE_QUEUED = 12
-STATE_PULL_REQUEST_QUEUED = 13
-
-STATE_NEW_BRANCH_DONE = 14
-STATE_RESETTED = 15
-STATE_BUILT = 16
-STATE_REBASED = 17
-STATE_CLEANED = 18
-STATE_PULL_REQUEST_CHECKED_OUT = 19
-
-JOB_BUILD = 1
-JOB_REBASE = 2
-JOB_RESET = 3
-JOB_CLEAN = 4
-JOB_NEW_BRANCH = 5
-JOB_CHECKOUT_PR = 6
+    BUILDER_FILE = "./git-monkey.glade"
+    print "Warning - developer mode active"
 
 def get_first(iterable, default=None):
     if iterable:

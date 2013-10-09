@@ -12,5 +12,10 @@
           <summary>Repo List</summary>
           <description>List of repos - name:remote:branch</description>
         </key>
+        <key name="dev-mode" type="b">
+          <default>false</default>
+          <summary>Developer mode (local glade file)</summary>
+          <description>dev mode</description>
+        </key>
     </schema>
 </schemalist>

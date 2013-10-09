@@ -2,17 +2,14 @@
 
 import git
 from gi.repository import Gtk, Gio
+from constants import *
 
-SCHEMA = "com.linuxmint.git-monkey"
+s = Gio.Settings.new(SCHEMA)
 
-KEY_BUILD = "build-command"
-KEY_REPOS = "repos"
-
-if False:
+if not s.get_boolean(KEY_DEV_MODE):
     BUILDER_FILE = "/usr/lib/git-monkey/repo-edit.glade"
 else:
-    BUILDER_FILE = "/home/mtwebster/bin/git-monkey/usr/lib/git-monkey/repo-edit.glade"
-
+    BUILDER_FILE = "./repo-edit.glade"
 
 class EditRepo:
     def __init__(self, dir = None, upstream_remote = None, upstream_branch = None):

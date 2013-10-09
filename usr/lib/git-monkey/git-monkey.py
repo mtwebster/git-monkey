@@ -65,7 +65,8 @@ class GitRepo(git.Repo):
         self.dir = dir
         self.upstream_remote = upstream_remote
         self.upstream_branch = upstream_branch
-        self.state = STATE_NONE
+        self.state = []
+        self.last_finished_state = STATE_NONE
 
 class Job:
     def __init__(self, repo, job_type, output_callback, finished_callback):
@@ -78,7 +79,7 @@ class Job:
         self.aborted = False
 
     def clean(self):
-        self.repo.state = STATE_CLEANING
+        self.repo.state[0] = STATE_CLEANING
         cmd = "git clean -fdx"
         self.process = subprocess.Popen(cmd, cwd=self.repo.dir, stdout=subprocess.PIPE, stderr=STDOUT, shell=True, preexec_fn=os.setsid)
         GLib.io_add_watch(self.process.stdout,
@@ -86,7 +87,7 @@ class Job:
                           self.output_callback)
 
     def reset(self):
-        self.repo.state = STATE_RESETTING
+        self.repo.state[0] = STATE_RESETTING
         cmd = "git reset --hard"
         self.process = subprocess.Popen(cmd, cwd=self.repo.dir, stdout=subprocess.PIPE, stderr=STDOUT, shell=True, preexec_fn=os.setsid)
         GLib.io_add_watch(self.process.stdout,
@@ -94,7 +95,7 @@ class Job:
                           self.output_callback)
 
     def rebase(self):
-        self.repo.state = STATE_REBASING
+        self.repo.state[0] = STATE_REBASING
         cmd = "git pull --rebase %s %s" % (self.repo.upstream_remote, self.repo.upstream_branch)
 
         self.process = subprocess.Popen(cmd, cwd=self.repo.dir, stdout=subprocess.PIPE, stderr=STDOUT, shell=True, preexec_fn=os.setsid)
@@ -103,7 +104,7 @@ class Job:
                           self.output_callback)
 
     def build(self):
-        self.repo.state = STATE_BUILDING
+        self.repo.state[0] = STATE_BUILDING
 
         settings = Gio.Settings.new(SCHEMA)
         cmd = settings.get_string(KEY_BUILD)
@@ -114,7 +115,7 @@ class Job:
                           self.output_callback)
 
     def new_branch(self):
-        self.repo.state = STATE_NEW_BRANCH_IN_PROGRESS
+        self.repo.state[0] = STATE_NEW_BRANCH_IN_PROGRESS
         cmd = "git checkout -b %s" % (self.new_branch_name)
         self.process = subprocess.Popen(cmd, cwd=self.repo.dir, stdout=subprocess.PIPE, stderr=STDOUT, shell=True, preexec_fn=os.setsid)
         GLib.io_add_watch(self.process.stdout,
@@ -123,7 +124,7 @@ class Job:
         self.new_branch_name = ""
 
     def pull_request(self):
-        self.repo.state = STATE_PULL_REQUEST_IN_PROGRESS
+        self.repo.state[0] = STATE_PULL_REQUEST_IN_PROGRESS
         cmd = "git fetch %s refs/pull/%s/head:%s && git checkout %s" % (self.repo.upstream_remote, self.new_branch_name, self.new_branch_name, self.new_branch_name)
         self.process = subprocess.Popen(cmd, cwd=self.repo.dir, stdout=subprocess.PIPE, stderr=STDOUT, shell=True, preexec_fn=os.setsid)
         GLib.io_add_watch(self.process.stdout,
@@ -152,7 +153,7 @@ class JobManager:
         for rem in to_remove:
             rem.aborted = True
             self.jobs.remove(rem)
-        repo.state = STATE_NONE
+        repo.state = []
 
     def add_job(self, job):
         self.jobs.append(job)
@@ -233,6 +234,7 @@ class Main:
         self.window = self.builder.get_object("window")
         self.clean_button = self.builder.get_object("clean")
         self.reset_button = self.builder.get_object("reset")
+        self.refresh_button = self.builder.get_object("refresh_button")
         self.rebase_button = self.builder.get_object("rebase")
         self.term_button = self.builder.get_object("terminal")
         self.full_build_button = self.builder.get_object("build")
@@ -290,8 +292,13 @@ class Main:
         column.set_min_width(200)
         self.treeview.append_column(column)
         cell = Gtk.CellRendererText()
-        column = Gtk.TreeViewColumn("Activity", cell)
-        column.set_cell_data_func(cell, self.activity_func)
+        column = Gtk.TreeViewColumn("Job Queue", cell)
+        column.set_cell_data_func(cell, self.current_activity_func)
+        column.set_min_width(300)
+        self.treeview.append_column(column)
+        cell = Gtk.CellRendererText()
+        column = Gtk.TreeViewColumn("Last Job", cell)
+        column.set_cell_data_func(cell, self.past_activity_func)
         self.treeview.append_column(column)
 
         self.model.set_sort_column_id(1, Gtk.SortType.ASCENDING)
@@ -316,57 +323,79 @@ class Main:
 
         self.window.show_all()
 
-    def activity_func(self, column, cell, model, iter, data=None):
+
+    def get_string_for_state(self, state):
+        text = ""
+
+        if state == STATE_NONE:
+            text = ""
+
+        elif state == STATE_BUILD_QUEUED:
+            text = "Build queued"
+        elif state == STATE_BUILDING:
+            text = "Building..."
+        elif state == STATE_BUILT:
+            text = "Build finished"
+
+        elif state == STATE_REBASE_QUEUED:
+            text = "Rebase queued"
+        elif state == STATE_REBASING:
+            text = "Rebasing..."
+        elif state == STATE_REBASED:
+            text = "Rebased"
+
+        elif state == STATE_CLEAN_QUEUED:
+            text = "Clean queued"
+        elif state == STATE_CLEANING:
+            text = "Cleaning..."
+        elif state == STATE_CLEANED:
+            text = "Cleaned"
+
+        elif state == STATE_RESET_QUEUED:
+            text = "Reset queued"
+        elif state == STATE_RESETTING:
+            text = "Resetting..."
+        elif state == STATE_RESETTED:
+            text = "Reset finished"
+
+        elif state == STATE_NEW_BRANCH_QUEUED:
+            text = "New branch queued"
+        elif state == STATE_NEW_BRANCH_IN_PROGRESS:
+            text = "Making new branch..."
+        elif state == STATE_NEW_BRANCH_DONE:
+            text = "New branch made"
+
+        elif state == STATE_PULL_REQUEST_QUEUED:
+            text = "Pull request checkout queued"
+        elif state == STATE_PULL_REQUEST_IN_PROGRESS:
+            text = "Checking out pull request..."
+        elif state == STATE_PULL_REQUEST_CHECKED_OUT:
+            text = "Pull request checked out"
+
+        return text
+
+    def current_activity_func(self, column, cell, model, iter, data=None):
         repo = model.get_value(iter, 0)
 
-        if repo.state == STATE_NONE:
-            cell.set_property("text", "")
+        string = ""
+        first = True
 
-        elif repo.state == STATE_BUILD_QUEUED:
-            cell.set_property("text", "Build queued")
-        elif repo.state == STATE_BUILDING:
-            cell.set_property("text", "Building...")
-        elif repo.state == STATE_BUILT:
-            cell.set_property("text", "Build finished")
+        for state in repo.state:
+            if not first:
+                string += ", "
+            string += self.get_string_for_state(state)
+            first = False
 
-        elif repo.state == STATE_REBASE_QUEUED:
-            cell.set_property("text", "Rebase queued")
-        elif repo.state == STATE_REBASING:
-            cell.set_property("text", "Rebasing...")
-        elif repo.state == STATE_REBASED:
-            cell.set_property("text", "Rebased")
+        cell.set_property("text", string)
 
-        elif repo.state == STATE_CLEAN_QUEUED:
-            cell.set_property("text", "Clean queued")
-        elif repo.state == STATE_CLEANING:
-            cell.set_property("text", "Cleaning...")
-        elif repo.state == STATE_CLEANED:
-            cell.set_property("text", "Cleaned")
+    def past_activity_func(self, column, cell, model, iter, data=None):
+        repo = model.get_value(iter, 0)
 
-        elif repo.state == STATE_RESET_QUEUED:
-            cell.set_property("text", "Reset queued")
-        elif repo.state == STATE_RESETTING:
-            cell.set_property("text", "Resetting...")
-        elif repo.state == STATE_RESETTED:
-            cell.set_property("text", "Reset finished")
-
-        elif repo.state == STATE_NEW_BRANCH_QUEUED:
-            cell.set_property("text", "New branch queued")
-        elif repo.state == STATE_NEW_BRANCH_IN_PROGRESS:
-            cell.set_property("text", "Making new branch...")
-        elif repo.state == STATE_NEW_BRANCH_DONE:
-            cell.set_property("text", "New branch made")
-
-        elif repo.state == STATE_PULL_REQUEST_QUEUED:
-            cell.set_property("text", "Pull request checkout queued")
-        elif repo.state == STATE_PULL_REQUEST_IN_PROGRESS:
-            cell.set_property("text", "Checking out pull request...")
-        elif repo.state == STATE_PULL_REQUEST_CHECKED_OUT:
-            cell.set_property("text", "Pull request checked out")
+        cell.set_property("text", self.get_string_for_state(repo.last_finished_state))
 
     def abort_func(self, column, cell, model, iter, data=None):
         repo = model.get_value(iter, 0)
-        if repo.state == STATE_NONE or repo.state >= STATE_NEW_BRANCH_DONE:
+        if len(repo.state) == 0:
             cell.set_property("stock-id", "")
         else:
             cell.set_property("stock-id", "gtk-no")
@@ -383,7 +412,8 @@ class Main:
                 elif event.type == Gdk.EventType._2BUTTON_PRESS:
                     iter = self.model.get_iter(path)
                     repo = self.model.get_value(iter, 0)
-                    repoedit.EditRepo(repo.dir, repo.upstream_remote, repo.upstream_branch)
+                    if len(repo.state) == 0:
+                        repoedit.EditRepo(repo.dir, repo.upstream_remote, repo.upstream_branch)
 
     def parse_dirs(self):
         self.model.clear()
@@ -467,9 +497,12 @@ class Main:
             self.new_branch.set_sensitive(True)
             self.rebase_button.set_sensitive(True)
             self.pull_request_button.set_sensitive(True)
-            self.branch_combo.set_sensitive(True)
-            self.remove_repo_button.set_sensitive(True)
-            self.master_button.set_sensitive(repo.head.reference.name != repo.upstream_branch)
+            no_active = len(repo.state) == 0
+            self.branch_combo.set_sensitive(no_active)
+            self.remove_repo_button.set_sensitive(no_active)
+            self.refresh_button.set_sensitive(no_active)
+            self.add_repo_button.set_sensitive(no_active)
+            self.master_button.set_sensitive(no_active and repo.head.reference.name != repo.upstream_branch)
 
     def on_branch_combo_changed (self, widget):
         tree_iter = widget.get_active_iter()
@@ -477,38 +510,43 @@ class Main:
             new_branch = self.combo_model[tree_iter][1]
             try:
                 self.current_repo.git.checkout(new_branch)
-                self.current_repo.state = STATE_NONE
+                self.current_repo.state = []
+                self.current_repo.last_finished_state = STATE_NONE
             except git.exc.GitCommandError, detail:
                 self.inform_error("Could not change branches - you probably have uncommitted changes", str(detail))
             self.update_repos()
 
     def on_refresh_clicked(self, button):
+        if len(self.job_manager.jobs) > 0:
+            self.inform("Please wait until all currently running jobs complete before trying to reload the repo list.", "")
+            return
+
         self.parse_dirs()
 
     def on_clean_clicked(self, button):
-        self.current_repo.state = STATE_CLEAN_QUEUED
+        self.current_repo.state.append(STATE_CLEAN_QUEUED)
         job = Job(self.current_repo, JOB_CLEAN, self.write_to_buffer, self.job_finished_callback)
         self.job_manager.add_job(job)
 
     def on_reset_clicked(self, button):
-        self.current_repo.state = STATE_RESET_QUEUED
+        self.current_repo.state.append(STATE_RESET_QUEUED)
         job = Job(self.current_repo, JOB_RESET, self.write_to_buffer, self.job_finished_callback)
         self.job_manager.add_job(job)
 
     def on_rebase_clicked(self, button):
-        self.current_repo.state = STATE_REBASE_QUEUED
+        self.current_repo.state.append(STATE_REBASE_QUEUED)
         job = Job(self.current_repo, JOB_REBASE, self.write_to_buffer, self.job_finished_callback)
         self.job_manager.add_job(job)
 
     def on_build_clicked(self, button):
-        self.current_repo.state = STATE_BUILD_QUEUED
+        self.current_repo.state.append(STATE_BUILD_QUEUED)
         job = Job(self.current_repo, JOB_BUILD, self.write_to_buffer, self.job_finished_callback)
         self.job_manager.add_job(job)
 
     def on_new_branch_clicked(self, button):
         new_branch = self.ask_new_branch_name("Enter a name for your new branch:")
         if new_branch is not None:
-            self.current_repo.state = STATE_NEW_BRANCH_QUEUED
+            self.current_repo.state.append(STATE_NEW_BRANCH_QUEUED)
             job = Job(self.current_repo, JOB_NEW_BRANCH, self.write_to_buffer, self.job_finished_callback)
             job.new_branch_name = new_branch
             self.job_manager.add_job(job)
@@ -519,7 +557,7 @@ class Main:
             name = self.model.get_value(treeiter, 1)
         number = self.ask_pull_request_number("Enter the pull request number to checkout for <b>%s</b>" % (name))
         if number is not None:
-            self.current_repo_state = STATE_PULL_REQUEST_QUEUED
+            self.current_repo_state.append(STATE_PULL_REQUEST_QUEUED)
             job = Job(self.current_repo, JOB_CHECKOUT_PR, self.write_to_buffer, self.job_finished_callback)
             job.new_branch_name = number
             self.job_manager.add_job(job)
@@ -530,7 +568,8 @@ class Main:
     def on_master_clicked(self, button):
         try:
             self.current_repo.git.checkout(self.current_repo.upstream_branch)
-            self.current_repo.state = STATE_NONE
+            self.current_repo.state = []
+            self.current_repo.last_finished_state = STATE_NONE
         except git.exc.GitCommandError, detail:
             self.inform_error("Could not change branches - you probably have uncommitted changes", str(detail))
         self.update_repos()
@@ -562,7 +601,10 @@ class Main:
         self.prefs_dialog.present()
 
     def on_add_repo_button_clicked(self, button):
-        dialog = repoedit.EditRepo()
+        if len(self.job_manager.jobs) > 0:
+            self.inform("Please wait until all currently running jobs complete before trying to add a new repo.", "")
+            return
+        repoedit.EditRepo()
 
     def on_remove_repo_button_clicked(self, button):
         settings = Gio.Settings.new(SCHEMA)
@@ -598,17 +640,23 @@ class Main:
     def job_finished_callback(self, job):
         if not job.aborted:
             if job.type == JOB_RESET:
-                job.repo.state = STATE_RESETTED
+                job.repo.last_finished_state = STATE_RESETTED
+                job.repo.state.remove(job.repo.state[0])
             elif job.type == JOB_CLEAN:
-                job.repo.state = STATE_CLEANED
+                job.repo.last_finished_state = STATE_CLEANED
+                job.repo.state.remove(job.repo.state[0])
             elif job.type == JOB_REBASE:
-                job.repo.state = STATE_REBASED
+                job.repo.last_finished_state = STATE_REBASED
+                job.repo.state.remove(job.repo.state[0])
             elif job.type == JOB_BUILD:
-                job.repo.state = STATE_BUILT
+                job.repo.last_finished_state = STATE_BUILT
+                job.repo.state.remove(job.repo.state[0])
             elif job.type == JOB_NEW_BRANCH:
-                job.repo.state = STATE_NEW_BRANCH_DONE
+                job.repo.last_finished_state = STATE_NEW_BRANCH_DONE
+                job.repo.state.remove(job.repo.state[0])
             elif job.type == JOB_CHECKOUT_PR:
-                job.repo.state = STATE_PULL_REQUEST_CHECKED_OUT
+                job.repo.last_finished_state = STATE_PULL_REQUEST_CHECKED_OUT
+                job.repo.state.remove(job.repo.state[0])
         self.update_repos()
         self.update_branch_combo(job.repo)
         return False

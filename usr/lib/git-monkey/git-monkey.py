@@ -319,10 +319,13 @@ class Main:
 
         self.setup_prefs()
 
-        self.settings.connect("changed::" + KEY_REPOS, lambda x,y: self.parse_dirs())
+        self.settings.connect("changed::" + KEY_REPOS, lambda x,y: self.repos_changed_callback())
 
         self.window.show_all()
 
+    def repos_changed_callback(self):
+        self.parse_dirs()
+        self.write_string_to_buffer("---------------------- LIST RELOADED -----------------------")
 
     def get_string_for_state(self, state):
         text = ""
@@ -522,6 +525,7 @@ class Main:
             return
 
         self.parse_dirs()
+        self.write_string_to_buffer("---------------------- LIST RELOADED -----------------------")
 
     def on_clean_clicked(self, button):
         self.current_repo.state.append(STATE_CLEAN_QUEUED)
@@ -636,6 +640,13 @@ class Main:
             return True
         else:
             return False
+
+    def write_string_to_buffer(self, string):
+        buf = self.output.get_buffer()
+        iter = buf.get_end_iter()
+        buf.insert(iter, "\n" + string + "\n")
+        iter = buf.get_end_iter()
+        self.output.scroll_to_iter(iter, .2, False, 0, 0)
 
     def job_finished_callback(self, job):
         if not job.aborted:

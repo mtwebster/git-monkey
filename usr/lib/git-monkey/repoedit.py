@@ -12,7 +12,7 @@ else:
     BUILDER_FILE = "./repo-edit.glade"
 
 class EditRepo:
-    def __init__(self, dir = None, upstream_remote = None, upstream_branch = None):
+    def __init__(self, dir = None, upstream_remote = None, upstream_branch = None, push_remote = None):
         self.builder = Gtk.Builder()
         self.builder.add_from_file(BUILDER_FILE)
 
@@ -22,6 +22,7 @@ class EditRepo:
         self.folder_button = self.builder.get_object("folder_button")
         self.us_remote_combo = self.builder.get_object("us_remote_combo")
         self.us_branch_combo = self.builder.get_object("us_branch_combo")
+        self.push_remote_combo = self.builder.get_object("push_remote_combo")
 
         self.remote_model = Gtk.ListStore(str)
         self.us_remote_combo.set_model(self.remote_model)
@@ -35,11 +36,18 @@ class EditRepo:
         self.us_branch_combo.pack_start(cell, True)
         self.us_branch_combo.add_attribute(cell, "text", 0)
 
+        self.push_remote_model = Gtk.ListStore(str)
+        self.push_remote_combo.set_model(self.push_remote_model)
+        cell = Gtk.CellRendererText()
+        self.push_remote_combo.pack_start(cell, True)
+        self.push_remote_combo.add_attribute(cell, "text", 0)
+
         self.builder.connect_signals(self)
 
         self.dir = dir
         self.upstream_remote = upstream_remote
         self.upstream_branch = upstream_branch
+        self.push_remote = push_remote or "-None-"
         self.repo = None
 
         if self.dir is not None:
@@ -49,6 +57,7 @@ class EditRepo:
                 self.setup_upstream_remote()
                 if self.upstream_branch is not None:
                     self.setup_upstream_branch()
+                    self.setup_push_remote()
                     self.ok_button.set_sensitive(True)
 
         self.window.show_all()
@@ -114,7 +123,31 @@ class EditRepo:
         iter = widget.get_active_iter()
         if iter != None:
             self.upstream_branch = self.branch_model[iter][0]
+            self.setup_push_remote()
             self.ok_button.set_sensitive(True)
+
+    def setup_push_remote(self):
+        self.push_remote_model.clear()
+
+        active_iter = None
+        for remote in self.repo.remotes:
+            iter = self.push_remote_model.insert_before(None, None)
+            self.push_remote_model.set_value(iter, 0, remote.name)
+
+            if self.push_remote != "-None-" and remote.name == self.push_remote:
+                active_iter = iter
+        none_iter = self.push_remote_model.insert_before(None, None)
+        self.push_remote_model.set_value(none_iter, 0, "-None-")
+        self.push_remote_combo.set_sensitive(True)
+        if active_iter:
+            self.push_remote_combo.set_active_iter(active_iter)
+        else:
+            self.push_remote_combo.set_active_iter(none_iter)
+
+    def on_push_remote_combo_changed(self, widget):
+        iter = widget.get_active_iter()
+        if iter != None:
+            self.push_remote = self.push_remote_model[iter][0]
 
     def on_ok_button_clicked(self, button):
         settings = Gio.Settings.new(SCHEMA)
@@ -123,13 +156,16 @@ class EditRepo:
         existing = False
 
         for item in repo_list:
-            name, remote, branch = item.split(":")
+            try:
+                name, remote, branch, push_remote = item.split(":")
+            except:
+                name, remote, branch = item.split(":")
             if name == self.dir:
                 existing = True
                 break
         if existing:
             repo_list.remove(item)
-        out = "%s:%s:%s" % (self.dir, self.upstream_remote, self.upstream_branch)
+        out = "%s:%s:%s:%s" % (self.dir, self.upstream_remote, self.upstream_branch, self.push_remote)
         repo_list.append(out)
         settings.set_strv(KEY_REPOS, repo_list)
         self.window.destroy()

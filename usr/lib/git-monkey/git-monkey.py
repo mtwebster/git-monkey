@@ -26,14 +26,20 @@ def get_first(iterable, default=None):
             return item
     return default
 
+def front_pop(iterable):
+    item = get_first(iterable)
+    if item:
+        iterable.remove(item)
+
 class GitRepo(git.Repo):
-    def __init__(self, dir, upstream_remote, upstream_branch):
+    def __init__(self, dir, upstream_remote, upstream_branch, push_remote = None):
         git.Repo.__init__(self, dir)
         self.can_make = False
         self.name = os.path.split(dir)[1]
         self.dir = dir
         self.upstream_remote = upstream_remote
         self.upstream_branch = upstream_branch
+        self.push_remote = push_remote
         self.state = []
         self.last_finished_state = STATE_NONE
 
@@ -109,20 +115,35 @@ class JobManager:
         self.model = model
         GObject.timeout_add(500, self.process_next_job)
 
+    def kill_current_process(self):
+        if self.current_job.process:
+            os.killpg(self.current_job.process.pid, signal.SIGTERM)
+            self.current_job.aborted = True
+
+    def clear_job_queue_by_list(self, job_list):
+        for job in job_list:
+            job.aborted = True
+            self.jobs.remove(job)
+
     def find_and_abort(self, repo):
         if self.current_job != None:
             if self.current_job.repo == repo:
-                if self.current_job.process:
-                    os.killpg(self.current_job.process.pid, signal.SIGTERM)
-                    self.current_job.aborted = True
-        to_remove = []
+                self.kill_current_process()
+        to_abort = []
         for job in self.jobs:
             if job.repo == repo:
-                to_remove.append(job)
-        for rem in to_remove:
-            rem.aborted = True
-            self.jobs.remove(rem)
+                to_abort.append(job)
+        self.clear_job_queue_by_list(to_abort)
         repo.state = []
+        repo.last_finished_state = STATE_ABORTED
+
+    def abort_all_jobs(self):
+        if self.current_job != None:
+            self.kill_current_process()
+        to_abort = []
+        for job in self.jobs:
+            to_abort.append(job)
+        self.clear_job_queue_by_list(to_abort)
 
     def add_job(self, job):
         self.jobs.append(job)
@@ -237,7 +258,9 @@ class Main:
         column.set_sort_column_id(1)
         column.set_min_width(200)
         self.treeview.append_column(column)
-        column = Gtk.TreeViewColumn("Current Branch", Gtk.CellRendererText(), markup=2)
+        cell = Gtk.CellRendererText()
+        cell.set_property("ellipsize", Pango.EllipsizeMode.MIDDLE)
+        column = Gtk.TreeViewColumn("Current Branch", cell, markup=2)
         column.set_sort_column_id(2)
         column.set_min_width(200)
         self.treeview.append_column(column)
@@ -267,6 +290,9 @@ class Main:
         self.treeview.set_model(self.model)
         self.branch_combo.set_model(self.combo_model)
         cell = Gtk.CellRendererText()
+        cell.set_property("ellipsize", Pango.EllipsizeMode.MIDDLE)
+        cell.set_property("width-chars", 35)
+        cell.set_property("max-width-chars", 35)
         self.branch_combo.pack_start(cell, True)
         self.branch_combo.add_attribute(cell, "text", 0)
 
@@ -332,6 +358,9 @@ class Main:
         elif state == STATE_PULL_REQUEST_CHECKED_OUT:
             text = "Pull request checked out"
 
+        elif state == STATE_ABORTED:
+            text = "Aborted"
+
         return text
 
     def current_activity_func(self, column, cell, model, iter, data=None):
@@ -373,21 +402,30 @@ class Main:
                     iter = self.model.get_iter(path)
                     repo = self.model.get_value(iter, 0)
                     if len(repo.state) == 0:
-                        repoedit.EditRepo(repo.dir, repo.upstream_remote, repo.upstream_branch)
+                        repoedit.EditRepo(repo.dir, repo.upstream_remote, repo.upstream_branch, repo.push_remote)
 
     def parse_dirs(self):
         self.model.clear()
         repos = self.settings.get_strv(KEY_REPOS)
 
         for repo in repos:
-            if len(repo.split(":")) != 3:
+            l = len(repo.split(":"))
+            if l != 3 and l != 4:
                 print "Malformed repo entry: ", repo
                 continue
-            d, remote, remote_branch = repo.split(":")
+            if l == 3:
+                d, remote, remote_branch = repo.split(":")
+                push_remote = None
+            elif l == 4:
+                d, remote, remote_branch, push_remote = repo.split(":")
             if not os.path.exists(d):
                 print "Non-existant repo directory: ", d
                 continue
-            repo = GitRepo(d, remote, remote_branch)
+            if push_remote == "-None-":
+                pr = None
+            else:
+                pr = push_remote
+            repo = GitRepo(d, remote, remote_branch, pr)
 
             iter = self.model.insert_before(None, None)
             self.model.set_value(iter, 0, repo)
@@ -558,6 +596,16 @@ class Main:
             self.on_clean_clicked(None)
             row_iter = self.model.iter_next(row_iter)
 
+    def on_cancel_all_clicked(self, button):
+        self.job_manager.abort_all_jobs()
+        row_iter = self.model.get_iter_first()
+        while row_iter != None:
+            repo = self.model.get_value(row_iter, 0)
+            if repo.state != []:
+                repo.state = []
+                repo.last_finished_state = STATE_ABORTED
+            row_iter = self.model.iter_next(row_iter)
+
     def on_prefs_button_clicked(self, button):
         self.prefs_dialog.present()
 
@@ -574,8 +622,10 @@ class Main:
         existing = False
 
         for item in repo_list:
-            name, remote, branch = item.split(":")
-            print name, self.current_repo.dir
+            try:
+                name, remote, branch, push_remote = item.split(":")
+            except:
+                name, remote, branch = item.split(":")
             if name == self.current_repo.dir:
                 existing = True
                 break
@@ -609,22 +659,17 @@ class Main:
         if not job.aborted:
             if job.type == JOB_RESET:
                 job.repo.last_finished_state = STATE_RESETTED
-                job.repo.state.remove(job.repo.state[0])
             elif job.type == JOB_CLEAN:
                 job.repo.last_finished_state = STATE_CLEANED
-                job.repo.state.remove(job.repo.state[0])
             elif job.type == JOB_REBASE:
                 job.repo.last_finished_state = STATE_REBASED
-                job.repo.state.remove(job.repo.state[0])
             elif job.type == JOB_BUILD:
                 job.repo.last_finished_state = STATE_BUILT
-                job.repo.state.remove(job.repo.state[0])
             elif job.type == JOB_NEW_BRANCH:
                 job.repo.last_finished_state = STATE_NEW_BRANCH_DONE
-                job.repo.state.remove(job.repo.state[0])
             elif job.type == JOB_CHECKOUT_PR:
                 job.repo.last_finished_state = STATE_PULL_REQUEST_CHECKED_OUT
-                job.repo.state.remove(job.repo.state[0])
+        front_pop(job.repo.state)
         self.update_repos()
         self.update_branch_combo(job.repo)
         return False

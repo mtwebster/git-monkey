@@ -556,7 +556,7 @@ class Main:
             name = self.model.get_value(treeiter, 1)
         number = self.ask_pull_request_number("Enter the pull request number to checkout for <b>%s</b>" % (name))
         if number is not None:
-            self.current_repo_state.append(STATE_PULL_REQUEST_QUEUED)
+            self.current_repo.state.append(STATE_PULL_REQUEST_QUEUED)
             job = Job(self.current_repo, JOB_CHECKOUT_PR, self.write_to_buffer, self.job_finished_callback)
             job.new_branch_name = number
             self.job_manager.add_job(job)

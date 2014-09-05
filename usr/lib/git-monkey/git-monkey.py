@@ -562,7 +562,12 @@ class Main:
             self.job_manager.add_job(job)
 
     def on_terminal_clicked(self, button):
-        subprocess.Popen("gnome-terminal", cwd=self.current_repo.dir, shell=True)
+        settings = Gio.Settings.new(SCHEMA_TERM)
+        if(settings is not None):
+            term = settings.get_string(KEY_TERM)
+            subprocess.Popen(term, cwd=self.current_repo.dir, shell=True)
+        else:
+            subprocess.Popen("x-terminal-emulator", cwd=self.current_repo.dir, shell=True)
 
     def on_master_clicked(self, button):
         try:

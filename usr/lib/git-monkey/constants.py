@@ -2,11 +2,13 @@
 
 # Settings schema
 SCHEMA = "com.linuxmint.git-monkey"
+SCHEMA_TERM = "org.cinnamon.desktop.default-applications.terminal"
 
 # Settings keys
 KEY_BUILD = "build-command"
 KEY_REPOS = "repos"
 KEY_DEV_MODE = "dev-mode"
+KEY_TERM = "exec"
 
 # Repo states
 STATE_NONE = -1

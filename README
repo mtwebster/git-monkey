@@ -1,6 +1,0 @@
-git-monkey: a simple repo manager for debian-based projects.
-
-TODO:
-
-- Add more config options, add repos by picking folder and automagically acquiring upstream and remotes to select
-- Add more developer options - commit, push, auto-open url of pull request.
